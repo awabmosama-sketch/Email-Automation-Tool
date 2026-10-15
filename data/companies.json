@@ -1,0 +1,23 @@
+{
+  "Abdion": {
+    "services": [
+      "Abdion provides a multi-tenant SaaS platform to build AI agents that talk to customers over WhatsApp",
+      "Instagram",
+      "Messenger",
+      "SIP voice",
+      "web widget",
+      "and REST API. Agents use knowledge bases",
+      "tools",
+      "workflows",
+      "connectors",
+      "memory",
+      "human handoff",
+      "and metered billing. Includes a flow builder",
+      "copilot",
+      "and integrations."
+    ],
+    "value_proposition": "Abdion lets any business launch AI agents across WhatsApp, Instagram, Messenger, voice, web, and API in minutes — grounded in their own knowledge, tools, and workflows, with human handoff and metered billing built in.",
+    "tone": "friendly-professional",
+    "signature": "Best Regards\nAwab\nAbdion Team"
+  }
+}

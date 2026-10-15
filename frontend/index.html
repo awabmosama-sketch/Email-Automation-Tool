@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Email Automation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/frontend/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">EA</span><span>Email Automation</span></div>
+      <div class="status"><span id="status-dot" class="status-dot"></span><span id="status-text">Connecting</span></div>
+    </header>
+
+    <section class="intro">
+      <p class="eyebrow">CONTROL ROOM / <span id="contact-count">--</span> CONTACTS</p>
+      <h1>Make the next<br><em>hello</em> count.</h1>
+      <p class="lede">Review contacts, validate delivery addresses, and shape a thoughtful first draft.</p>
+    </section>
+
+    <section class="workspace">
+      <div class="panel contacts-panel">
+        <div class="panel-heading"><h2>Contacts</h2><span class="mono" id="sync-time">--</span></div>
+        <div id="contacts-list" class="contacts-list"><div class="empty">Loading contacts...</div></div>
+      </div>
+
+      <div class="panel compose-panel">
+        <div class="panel-heading">
+          <div class="tab-buttons">
+            <button type="button" class="tab-btn active" id="tab-pitch-btn">Pitch Generator</button>
+            <button type="button" class="tab-btn" id="tab-standard-btn">Quick Preview</button>
+          </div>
+          <span class="pill" id="tab-pill">B2B PITCH AI</span>
+        </div>
+
+        <!-- PITCH GENERATOR SECTION -->
+        <div id="pitch-section">
+          <form id="pitch-form">
+            <div class="field-row">
+              <label>Target Name<input id="pitch-name" name="pitch-name" placeholder="Target person's full name" maxlength="100" required></label>
+              <label>Target Email<input id="pitch-email" name="pitch-email" type="email" placeholder="lead@company.com" maxlength="320" required></label>
+            </div>
+            <div class="field-row-3">
+              <label>Target Phone<input id="pitch-phone" name="pitch-phone" type="tel" placeholder="+1234567890" maxlength="50"></label>
+              <label>Pitching Company
+                <div class="select-with-btn">
+                  <select id="pitch-company" name="pitch-company" required>
+                    <option value="" disabled selected>Loading companies...</option>
+                  </select>
+                  <button type="button" id="open-company-modal-btn" class="button secondary btn-compact" title="Add a new pitching company">+ New</button>
+                  <button type="button" id="remove-company-btn" class="button danger btn-compact" title="Remove selected pitching company">Remove</button>
+                </div>
+              </label>
+            </div>
+            <div class="field-row-3">
+              <label>Target Role<input id="pitch-role" name="pitch-role" placeholder="e.g. Marketing Manager" maxlength="100" required></label>
+              <label>Target Industry<input id="pitch-industry" name="pitch-industry" placeholder="e.g. E-commerce" maxlength="100" required></label>
+            </div>
+            <label>Extra Details / Context
+              <textarea id="pitch-details" name="pitch-details" rows="3" maxlength="1000" placeholder="Specific pain points, recent company news, or personal notes..."></textarea>
+            </label>
+            <div class="actions">
+              <button type="button" id="pitch-verify-button" class="button secondary">Check address</button>
+              <button type="button" id="pitch-save-button" class="button secondary">Save contact</button>
+              <button type="button" id="remove-contact-button" class="button danger" disabled>Remove contact</button>
+              <button type="submit" id="pitch-generate-button" class="button primary">Generate Preview <span>&rarr;</span></button>
+              <button type="button" id="pitch-send-button" class="button send-button" disabled>Send Pitch</button>
+            </div>
+          </form>
+          <div id="pitch-verify-result" class="result" aria-live="polite"></div>
+          <div id="pitch-preview" class="preview hidden">
+            <div class="preview-meta">
+              <div class="preview-meta-row">
+                <span>PITCH SUBJECT</span>
+                <span id="pitch-spam-badge" class="spam-badge spam-low">Spam Score: --</span>
+              </div>
+              <strong id="pitch-preview-subject"></strong>
+            </div>
+            <div id="pitch-spam-warning" class="spam-warning-box hidden">
+              ⚠️ Warning: High spam score detected (&ge; 7). Explicit confirmation required before sending.
+            </div>
+            <div class="preview-body" id="pitch-preview-body"></div>
+            <div class="preview-footer">
+              <span id="pitch-preview-mode">B2B SERVICE PITCH</span>
+              <span>NO MESSAGE SENT YET</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- QUICK PREVIEW SECTION (EXISTING) -->
+        <div id="standard-section" class="hidden">
+          <form id="preview-form">
+            <div class="field-row">
+              <label>Name<input id="name" name="name" placeholder="Recipient name" maxlength="100" required></label>
+              <label>Email<input id="email" name="email" type="email" placeholder="name@company.com" maxlength="320" required></label>
+            </div>
+            <label>Context<textarea id="context" name="context" rows="3" maxlength="500" placeholder="What makes this message relevant?"></textarea></label>
+            <div class="actions">
+              <button type="button" id="verify-button" class="button secondary">Check address</button>
+              <button type="button" id="add-button" class="button secondary">Add contact</button>
+              <button type="submit" class="button primary">Generate preview <span>&rarr;</span></button>
+              <button type="button" id="send-button" class="button send-button" disabled>Send to this contact</button>
+            </div>
+          </form>
+          <div id="verify-result" class="result" aria-live="polite"></div>
+          <div id="preview" class="preview hidden">
+            <div class="preview-meta"><span>SUBJECT</span><strong id="preview-subject"></strong></div>
+            <div class="preview-body" id="preview-body"></div>
+            <div class="preview-footer"><span id="preview-mode">AI PREVIEW</span><span>NO MESSAGE SENT</span></div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ADD COMPANY MODAL -->
+    <div id="company-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="company-modal-title">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="company-modal-title">Register Pitching Company</h3>
+          <button type="button" id="close-company-modal-btn" class="close-btn" aria-label="Close">&times;</button>
+        </div>
+        <form id="company-form">
+          <div class="modal-body">
+            <label>Company Name
+              <input id="new-company-name" placeholder="e.g. Acme Tech Solutions" maxlength="100" required>
+            </label>
+            <label>Services Offered (one per line or comma-separated)
+              <textarea id="new-company-services" rows="3" placeholder="Custom software development&#10;Mobile app development&#10;Cloud optimization" required></textarea>
+            </label>
+            <label>Value Proposition (1-2 line summary)
+              <textarea id="new-company-value-prop" rows="2" placeholder="e.g. We help businesses automate workflows and reduce operational friction." required></textarea>
+            </label>
+            <label>Brand Tone
+              <input id="new-company-tone" placeholder="e.g. friendly-professional, formal, consultative" value="friendly-professional" required>
+            </label>
+            <label>Official Signature Block
+              <textarea id="new-company-signature" rows="4" placeholder="Best regards,&#10;Awab Al Barmawy&#10;Acme Team&#10;contact@acme.com" required></textarea>
+            </label>
+            <div id="company-modal-result" class="result" aria-live="polite"></div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" id="cancel-company-modal-btn" class="button secondary">Cancel</button>
+            <button type="submit" id="save-company-btn" class="button primary">Save Company Profile</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </main>
+  <script src="/frontend/app.js"></script>
+</body>
+</html>
