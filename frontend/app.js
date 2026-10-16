@@ -91,6 +91,32 @@ function setContact(contact) {
   });
 }
 
+function startNewContact() {
+  editingContactEmail = null;
+  [
+    "pitch-name",
+    "pitch-email",
+    "pitch-phone",
+    "pitch-role",
+    "pitch-industry",
+    "pitch-details",
+    "name",
+    "email",
+    "context",
+  ].forEach((id) => {
+    byId(id).value = "";
+  });
+  byId("pitch-save-button").textContent = "Save contact";
+  byId("remove-contact-button").disabled = true;
+  invalidateStandardPreview();
+  invalidatePitchPreview();
+  byId("verify-result").textContent = "";
+  byId("pitch-verify-result").textContent = "Ready for a new contact.";
+  byId("pitch-name").focus();
+}
+
+byId("new-contact-button").addEventListener("click", startNewContact);
+
 async function loadCompanies(selectValue = null) {
   try {
     const response = await fetch("/companies");

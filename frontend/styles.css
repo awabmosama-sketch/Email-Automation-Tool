@@ -30,6 +30,7 @@ h1 em { color: var(--coral); font-style: normal; }
 .workspace { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(420px, 1.2fr); gap: 20px; align-items: start; }
 .panel { background: color-mix(in srgb, var(--white) 88%, transparent); border: 1px solid var(--line); padding: 25px; box-shadow: 8px 8px 0 rgba(21, 107, 80, .08); }
 .panel-heading { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 17px; margin-bottom: 19px; }
+.panel-heading-actions { display: flex; align-items: center; gap: 10px; }
 h2 { font-size: 19px; letter-spacing: -.04em; margin: 0; }
 .pill { color: var(--green); background: var(--green-soft); padding: 6px 8px; font-size: 9px; }
 .contacts-list { display: grid; gap: 7px; }

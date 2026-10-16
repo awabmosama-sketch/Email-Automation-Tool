@@ -9,6 +9,10 @@ load_dotenv(BASE_DIR / ".env")
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 SENDER_NAME = os.getenv("SENDER_NAME", "Team")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").strip().lower()
+LLM_API_KEY_CONFIGURED = bool(
+    os.getenv("ANTHROPIC_API_KEY") if LLM_PROVIDER == "anthropic" else os.getenv("GROQ_API_KEY")
+)
 
 # Sending limits
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", 5))
@@ -18,10 +22,12 @@ DELAY_BETWEEN_EMAILS = 15  # seconds — warmup ke liye
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465  # SSL port
 
-# File paths
-CONTACTS_FILE = BASE_DIR / "data" / "contacts.csv"
-LOG_FILE = BASE_DIR / "data" / "sent_log.csv"
-COMPANIES_FILE = BASE_DIR / "data" / "companies.json"
+# File paths. Override these in deployment environments with a mounted or
+# externally synchronized writable directory.
+DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
+CONTACTS_FILE = Path(os.getenv("CONTACTS_FILE", DATA_DIR / "contacts.csv"))
+LOG_FILE = Path(os.getenv("LOG_FILE", DATA_DIR / "sent_log.csv"))
+COMPANIES_FILE = Path(os.getenv("COMPANIES_FILE", DATA_DIR / "companies.json"))
 
 
 def validate_config():

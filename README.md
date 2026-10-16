@@ -18,6 +18,8 @@ email-automation/
 │   ├── contacts.csv    # Contact leads with company and target details
 │   └── sent_log.csv    # Sent delivery log with status and pitch tags
 ├── frontend/           # Browser dashboard assets (Pitch Generator & Preview)
+├── api/index.py        # Vercel FastAPI entrypoint
+├── vercel.json         # Vercel routing configuration
 ├── .env.example        # Safe environment variable template
 ├── .env                # Local secrets, not committed
 └── requirements.txt
@@ -39,6 +41,8 @@ Copy `.env.example` to `.env` and add your values:
 Copy-Item .env.example .env
 ```
 
+The default provider is Groq. To use Anthropic instead, set `LLM_PROVIDER=anthropic` and provide `ANTHROPIC_API_KEY` plus an optional `ANTHROPIC_MODEL`.
+
 ## Run The Web App
 
 Run this command from the project root:
@@ -51,7 +55,7 @@ Open <http://127.0.0.1:8000> for the dashboard or <http://127.0.0.1:8000/docs> f
 
 The dashboard can:
 
-- Add and select contacts in `data/contacts.csv`.
+- Add and select contacts in `data/contacts.csv` with the `+ New` action.
 - Edit a selected contact and save changes without creating a duplicate.
 - Remove a selected contact after confirmation.
 - Remove unwanted pitching companies from the company selector.
@@ -110,3 +114,13 @@ node --check frontend\app.js
 ```
 
 Keep `.env`, `venv/`, generated caches, and `data/sent_log.csv` out of version control. Do not commit API keys or Gmail app passwords.
+
+## Deploy On Vercel
+
+The repository includes a Vercel Python function adapter in `api/index.py` and the routing configuration in `vercel.json`.
+
+1. Import the repository into Vercel.
+2. Add `LLM_PROVIDER`, the matching `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, `GMAIL_USER`, `GMAIL_APP_PASSWORD`, and `SENDER_NAME` as project environment variables.
+3. Deploy with the default Vercel build settings.
+
+The bundled CSV and JSON files are suitable for local development and initial read-only data on Vercel, but Vercel function filesystems are ephemeral. For durable contacts, company profiles, and send logs, set `CONTACTS_FILE`, `COMPANIES_FILE`, and `LOG_FILE` to paths backed by a mounted storage layer, or replace the file helpers with a hosted database before using the deployed app as a shared production tool.

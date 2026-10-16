@@ -24,7 +24,13 @@
 
     <section class="workspace">
       <div class="panel contacts-panel">
-        <div class="panel-heading"><h2>Contacts</h2><span class="mono" id="sync-time">--</span></div>
+        <div class="panel-heading">
+          <h2>Contacts</h2>
+          <div class="panel-heading-actions">
+            <button type="button" id="new-contact-button" class="button secondary btn-compact">+ New</button>
+            <span class="mono" id="sync-time">--</span>
+          </div>
+        </div>
         <div id="contacts-list" class="contacts-list"><div class="empty">Loading contacts...</div></div>
       </div>
 

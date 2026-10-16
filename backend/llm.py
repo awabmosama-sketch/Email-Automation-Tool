@@ -1,6 +1,9 @@
 import os
 import json
 import re
+from typing import Any
+
+import anthropic
 from groq import Groq
 from dotenv import load_dotenv
 
@@ -11,14 +14,60 @@ except ImportError:
 
 load_dotenv()
 
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").strip().lower()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY missing in .env")
+if LLM_PROVIDER not in {"groq", "anthropic"}:
+    raise ValueError("LLM_PROVIDER must be either 'groq' or 'anthropic'")
 
-client = Groq(api_key=GROQ_API_KEY)
+if LLM_PROVIDER == "anthropic":
+    if not ANTHROPIC_API_KEY:
+        raise ValueError("ANTHROPIC_API_KEY missing in .env")
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+else:
+    if not GROQ_API_KEY:
+        raise ValueError("GROQ_API_KEY missing in .env")
+    client = Groq(api_key=GROQ_API_KEY)
+    MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
-MODEL = "openai/gpt-oss-120b"
+
+def _complete(
+    messages: list[dict[str, str]],
+    temperature: float,
+    max_tokens: int,
+    json_mode: bool = False,
+) -> str:
+    if LLM_PROVIDER == "anthropic":
+        system_messages = [message["content"] for message in messages if message["role"] == "system"]
+        user_messages = [
+            {"role": message["role"], "content": message["content"]}
+            for message in messages
+            if message["role"] != "system"
+        ]
+        response = client.messages.create(
+            model=MODEL,
+            system="\n\n".join(system_messages) if system_messages else anthropic.NOT_GIVEN,
+            messages=user_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return "".join(
+            block.text for block in response.content if getattr(block, "type", "") == "text"
+        ).strip()
+
+    kwargs: dict[str, Any] = {
+        "model": MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_completion_tokens": max_tokens,
+        "reasoning_effort": "low",
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    response = client.chat.completions.create(**kwargs)
+    return response.choices[0].message.content.strip()
 
 
 def _extract_json(text):
@@ -57,16 +106,12 @@ Return ONLY valid JSON, no other text, in exactly this format:
 {{"subject": "your subject line", "body": "your email body here"}}
 """
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
+    text = _complete(
+        [{"role": "user", "content": prompt}],
         temperature=0.7,
-        max_completion_tokens=1024,
-        reasoning_effort="low",
-        response_format={"type": "json_object"},
+        max_tokens=1024,
+        json_mode=True,
     )
-
-    text = response.choices[0].message.content.strip()
 
     try:
         data = _extract_json(text)
@@ -94,16 +139,12 @@ Return ONLY valid JSON in exactly this format:
 Score 0 = totally clean, 10 = very spammy.
 """
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
+    text = _complete(
+        [{"role": "user", "content": prompt}],
         temperature=0.2,
-        max_completion_tokens=512,
-        reasoning_effort="low",
-        response_format={"type": "json_object"},
+        max_tokens=512,
+        json_mode=True,
     )
-
-    text = response.choices[0].message.content.strip()
 
     try:
         data = _extract_json(text)
@@ -204,18 +245,15 @@ Return ONLY a valid JSON object in exactly this format:
             )
             usr_content += "\nEnsure output starts with { and ends with }."
 
-        res = client.chat.completions.create(
-            model=MODEL,
-            messages=[
+        return _complete(
+            [
                 {"role": "system", "content": sys_content},
                 {"role": "user", "content": usr_content},
             ],
             temperature=0.6 if not strict else 0.3,
-            max_completion_tokens=1024,
-            reasoning_effort="low",
-            response_format={"type": "json_object"},
+            max_tokens=1024,
+            json_mode=True,
         )
-        return res.choices[0].message.content.strip()
 
     # Attempt 1
     raw_text = _invoke(strict=False)

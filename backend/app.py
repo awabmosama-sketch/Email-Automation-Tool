@@ -209,7 +209,8 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "service": "email-automation",
         "contacts_loaded": len(load_contacts()),
-        "llm_configured": bool(__import__("os").getenv("GROQ_API_KEY")),
+        "llm_provider": config.LLM_PROVIDER,
+        "llm_configured": config.LLM_API_KEY_CONFIGURED,
         "smtp_configured": bool(config.GMAIL_USER and config.GMAIL_APP_PASSWORD),
     }
 
