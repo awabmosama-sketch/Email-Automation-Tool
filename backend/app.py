@@ -7,8 +7,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from psycopg.errors import UniqueViolation
 
 from . import config
+from . import database
 from .companies import (
     add_or_update_company_profile,
     load_company_profiles,
@@ -83,6 +85,8 @@ class CompanyCreateRequest(BaseModel):
 
 
 def load_contacts() -> list[dict[str, str]]:
+    if database.is_configured():
+        return database.load_contacts()
     if not CONTACTS_FILE.exists():
         return []
     with CONTACTS_FILE.open(newline="", encoding="utf-8") as contacts_file:
@@ -130,6 +134,17 @@ def write_contacts(contacts: list[dict[str, str]]) -> None:
 def save_contact(contact: ContactRequest) -> dict[str, str]:
     new_contact = normalize_contact(contact)
 
+    if database.is_configured():
+        try:
+            database.insert_contact(new_contact)
+        except UniqueViolation as error:
+            raise HTTPException(
+                status_code=409,
+                detail="A contact with this email already exists.",
+            ) from error
+        new_contact["context"] = new_contact["details"]
+        return new_contact
+
     existing_emails = {row.get("email", "").strip().lower() for row in load_contacts()}
     if new_contact["email"] in existing_emails:
         raise HTTPException(status_code=409, detail="A contact with this email already exists.")
@@ -145,6 +160,22 @@ def save_contact(contact: ContactRequest) -> dict[str, str]:
 def update_contact(original_email: str, contact: ContactRequest) -> dict[str, str]:
     new_contact = normalize_contact(contact)
     original_email = original_email.strip().lower()
+
+    if database.is_configured():
+        if not any(row.get("email", "").lower() == original_email for row in load_contacts()):
+            raise HTTPException(status_code=404, detail="Contact not found.")
+        try:
+            updated = database.update_contact(original_email, new_contact)
+        except UniqueViolation as error:
+            raise HTTPException(
+                status_code=409,
+                detail="Another contact already uses this email.",
+            ) from error
+        if not updated:
+            raise HTTPException(status_code=404, detail="Contact not found.")
+        new_contact["context"] = new_contact["details"]
+        return new_contact
+
     contacts = load_contacts()
     contact_index = next(
         (index for index, row in enumerate(contacts) if row.get("email", "").lower() == original_email),
@@ -168,6 +199,11 @@ def update_contact(original_email: str, contact: ContactRequest) -> dict[str, st
 
 def remove_contact(email: str) -> None:
     email = email.strip().lower()
+    if database.is_configured():
+        if not database.delete_contact(email):
+            raise HTTPException(status_code=404, detail="Contact not found.")
+        return
+
     contacts = load_contacts()
     remaining = [row for row in contacts if row.get("email", "").lower() != email]
     if len(remaining) == len(contacts):
@@ -289,6 +325,10 @@ def delete_contact(email: str) -> dict[str, str]:
 
 
 def log_send(email: str, status: str, subject: str) -> None:
+    if database.is_configured():
+        database.log_send(email, status, subject)
+        return
+
     log_file = config.LOG_FILE
     log_file.parent.mkdir(parents=True, exist_ok=True)
     file_exists = log_file.exists() and log_file.stat().st_size > 0

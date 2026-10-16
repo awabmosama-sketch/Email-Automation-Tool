@@ -10,6 +10,8 @@ email-automation/
 │   ├── app.py          # FastAPI routes, contact/send workflows, pitch endpoints
 │   ├── companies.py    # Pitching company profiles, services, and brand tones
 │   ├── config.py       # Environment and file configuration
+│   ├── database.py     # Neon PostgreSQL persistence
+│   ├── migrate_to_neon.py # One-time local data migration
 │   ├── llm.py          # Groq email & pitch generation, spam scoring
 │   ├── main.py         # Command-line batch sender
 │   ├── sender.py       # Gmail SMTP delivery
@@ -42,6 +44,14 @@ Copy-Item .env.example .env
 ```
 
 The default provider is Groq. To use Anthropic instead, set `LLM_PROVIDER=anthropic` and provide `ANTHROPIC_API_KEY` plus an optional `ANTHROPIC_MODEL`.
+
+Set `DATABASE_URL` to a Neon PostgreSQL connection string to persist contacts, company profiles, and send logs in the database. The required tables are created automatically on the first database request. Without `DATABASE_URL`, the app keeps using the local CSV and JSON files.
+
+To migrate the existing local contacts and company profiles after setting `DATABASE_URL`, run:
+
+```powershell
+.\venv\Scripts\python.exe -m backend.migrate_to_neon
+```
 
 ## Run The Web App
 
@@ -120,7 +130,7 @@ Keep `.env`, `venv/`, generated caches, and `data/sent_log.csv` out of version c
 The repository includes a Vercel Python function adapter in `api/index.py` and the routing configuration in `vercel.json`.
 
 1. Import the repository into Vercel.
-2. Add `LLM_PROVIDER`, the matching `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, `GMAIL_USER`, `GMAIL_APP_PASSWORD`, and `SENDER_NAME` as project environment variables.
+2. Add `DATABASE_URL`, `LLM_PROVIDER`, the matching `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, `GMAIL_USER`, `GMAIL_APP_PASSWORD`, and `SENDER_NAME` as project environment variables.
 3. Deploy with the default Vercel build settings.
 
-On Vercel, contact and company writes use `/tmp/email-automation-data` by default so the API remains writable, but Vercel function storage is ephemeral and may differ between instances. For durable shared contacts, company profiles, and send logs, set `CONTACTS_FILE`, `COMPANIES_FILE`, and `LOG_FILE` to paths backed by a mounted storage layer, or replace the file helpers with a hosted database before using the deployed app as a shared production tool.
+When `DATABASE_URL` is configured, Neon is used for durable shared contacts, company profiles, and send logs. The file-based fallback remains available for local development.

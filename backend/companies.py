@@ -2,6 +2,7 @@ import json
 import logging
 from pathlib import Path
 from . import config
+from . import database
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,13 @@ GENERIC_PROFILE = {
 
 def load_company_profiles() -> dict:
     """Loads all company profiles from data/companies.json or initializes it."""
+    if database.is_configured():
+        profiles = database.load_company_profiles()
+        if not profiles:
+            save_all_company_profiles(DEFAULT_COMPANY_PROFILES)
+            return dict(DEFAULT_COMPANY_PROFILES)
+        return profiles
+
     companies_file = config.COMPANIES_FILE
     if not companies_file.exists():
         save_all_company_profiles(DEFAULT_COMPANY_PROFILES)
@@ -78,6 +86,10 @@ def load_company_profiles() -> dict:
 
 def save_all_company_profiles(profiles: dict) -> None:
     """Persists all company profiles to data/companies.json."""
+    if database.is_configured():
+        database.save_company_profiles(profiles)
+        return
+
     companies_file = config.COMPANIES_FILE
     companies_file.parent.mkdir(parents=True, exist_ok=True)
     with open(companies_file, "w", encoding="utf-8") as f:

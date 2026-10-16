@@ -13,6 +13,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").strip().lower()
 LLM_API_KEY_CONFIGURED = bool(
     os.getenv("ANTHROPIC_API_KEY") if LLM_PROVIDER == "anthropic" else os.getenv("GROQ_API_KEY")
 )
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 # Sending limits
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", 5))
