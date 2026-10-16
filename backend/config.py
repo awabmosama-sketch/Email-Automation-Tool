@@ -24,8 +24,8 @@ SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465  # SSL port
 
 # Vercel's project directory is read-only. /tmp is writable but ephemeral;
-# use DATA_DIR for a durable mounted directory or external storage adapter.
-DEFAULT_DATA_DIR = Path("/tmp/email-automation-data") if os.getenv("VERCEL") else BASE_DIR / "data"
+# use DATA_DIR for the optional local file fallback or external storage adapter.
+DEFAULT_DATA_DIR = Path("/tmp/email-automation-data") if os.getenv("VERCEL") else BASE_DIR / ".local-data"
 DATA_DIR = Path(os.getenv("DATA_DIR", DEFAULT_DATA_DIR))
 CONTACTS_FILE = Path(os.getenv("CONTACTS_FILE", DATA_DIR / "contacts.csv"))
 LOG_FILE = Path(os.getenv("LOG_FILE", DATA_DIR / "sent_log.csv"))

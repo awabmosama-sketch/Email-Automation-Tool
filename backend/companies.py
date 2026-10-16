@@ -60,7 +60,7 @@ GENERIC_PROFILE = {
 
 
 def load_company_profiles() -> dict:
-    """Loads all company profiles from data/companies.json or initializes it."""
+    """Loads company profiles from Neon or the optional local fallback."""
     if database.is_configured():
         profiles = database.load_company_profiles()
         if not profiles:

@@ -16,9 +16,6 @@ email-automation/
 │   ├── main.py         # Command-line batch sender
 │   ├── sender.py       # Gmail SMTP delivery
 │   └── verifier.py     # Email format, domain, and MX checks
-├── data/
-│   ├── contacts.csv    # Contact leads with company and target details
-│   └── sent_log.csv    # Sent delivery log with status and pitch tags
 ├── frontend/           # Browser dashboard assets (Pitch Generator & Preview)
 ├── api/index.py        # Vercel FastAPI entrypoint
 ├── vercel.json         # Vercel routing configuration
@@ -65,7 +62,7 @@ Open <http://127.0.0.1:8000> for the dashboard or <http://127.0.0.1:8000/docs> f
 
 The dashboard can:
 
-- Add and select contacts in `data/contacts.csv` with the `+ New` action.
+- Add and select contacts with the `+ New` action.
 - Edit a selected contact and save changes without creating a duplicate.
 - Remove a selected contact after confirmation.
 - Remove unwanted pitching companies from the company selector.
@@ -79,7 +76,7 @@ The dashboard can:
 .\venv\Scripts\python.exe -m backend.main
 ```
 
-The batch sender observes `DAILY_LIMIT`, validates contacts, checks spam scores, and writes delivery results to `data/sent_log.csv`.
+The batch sender observes `DAILY_LIMIT`, validates contacts, checks spam scores, and writes delivery results to Neon when `DATABASE_URL` is configured.
 
 ## Deliverability Requirements
 
@@ -123,7 +120,7 @@ python -m compileall -q backend
 node --check frontend\app.js
 ```
 
-Keep `.env`, `venv/`, generated caches, and `data/sent_log.csv` out of version control. Do not commit API keys or Gmail app passwords.
+Keep `.env`, `venv/`, `.local-data/`, and generated caches out of version control. Do not commit API keys or Gmail app passwords.
 
 ## Deploy On Vercel
 
