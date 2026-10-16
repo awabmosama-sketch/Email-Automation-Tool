@@ -138,6 +138,12 @@ def save_company_profiles(profiles: dict[str, dict[str, Any]]) -> None:
             )
 
 
+def delete_company_profile(name: str) -> bool:
+    with _connect() as connection:
+        cursor = connection.execute("DELETE FROM company_profiles WHERE name = %s", (name,))
+        return cursor.rowcount == 1
+
+
 def log_send(email: str, status: str, subject: str) -> None:
     with _connect() as connection:
         connection.execute(

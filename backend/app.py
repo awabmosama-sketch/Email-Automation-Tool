@@ -292,6 +292,12 @@ def create_company(request: CompanyCreateRequest) -> dict[str, Any]:
 @app.delete("/api/companies/{company_name}")
 def delete_company(company_name: str) -> dict[str, Any]:
     company_name = company_name.strip()
+    if database.is_configured():
+        if not database.delete_company_profile(company_name):
+            raise HTTPException(status_code=404, detail="Company profile not found.")
+        profiles = database.load_company_profiles()
+        return {"message": f"Company '{company_name}' removed.", "companies": list(profiles.keys())}
+
     profiles = load_company_profiles()
     if company_name not in profiles:
         raise HTTPException(status_code=404, detail="Company profile not found.")
