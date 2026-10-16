@@ -123,4 +123,4 @@ The repository includes a Vercel Python function adapter in `api/index.py` and t
 2. Add `LLM_PROVIDER`, the matching `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, `GMAIL_USER`, `GMAIL_APP_PASSWORD`, and `SENDER_NAME` as project environment variables.
 3. Deploy with the default Vercel build settings.
 
-The bundled CSV and JSON files are suitable for local development and initial read-only data on Vercel, but Vercel function filesystems are ephemeral. For durable contacts, company profiles, and send logs, set `CONTACTS_FILE`, `COMPANIES_FILE`, and `LOG_FILE` to paths backed by a mounted storage layer, or replace the file helpers with a hosted database before using the deployed app as a shared production tool.
+On Vercel, contact and company writes use `/tmp/email-automation-data` by default so the API remains writable, but Vercel function storage is ephemeral and may differ between instances. For durable shared contacts, company profiles, and send logs, set `CONTACTS_FILE`, `COMPANIES_FILE`, and `LOG_FILE` to paths backed by a mounted storage layer, or replace the file helpers with a hosted database before using the deployed app as a shared production tool.

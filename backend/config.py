@@ -22,9 +22,10 @@ DELAY_BETWEEN_EMAILS = 15  # seconds — warmup ke liye
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465  # SSL port
 
-# File paths. Override these in deployment environments with a mounted or
-# externally synchronized writable directory.
-DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
+# Vercel's project directory is read-only. /tmp is writable but ephemeral;
+# use DATA_DIR for a durable mounted directory or external storage adapter.
+DEFAULT_DATA_DIR = Path("/tmp/email-automation-data") if os.getenv("VERCEL") else BASE_DIR / "data"
+DATA_DIR = Path(os.getenv("DATA_DIR", DEFAULT_DATA_DIR))
 CONTACTS_FILE = Path(os.getenv("CONTACTS_FILE", DATA_DIR / "contacts.csv"))
 LOG_FILE = Path(os.getenv("LOG_FILE", DATA_DIR / "sent_log.csv"))
 COMPANIES_FILE = Path(os.getenv("COMPANIES_FILE", DATA_DIR / "companies.json"))

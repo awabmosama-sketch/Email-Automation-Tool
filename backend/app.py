@@ -14,7 +14,6 @@ from .companies import (
     load_company_profiles,
     save_all_company_profiles,
 )
-from .llm import generate_pitch_email
 from .sender import send_email, wrap_in_html
 from .verifier import is_blocked_domain, is_valid_format, verify
 
@@ -358,6 +357,11 @@ def preview(contact: ContactRequest) -> dict[str, Any]:
 @app.post("/pitch/generate")
 @app.post("/api/pitch/generate")
 def generate_pitch(request: PitchGenerateRequest) -> dict[str, Any]:
+    try:
+        from .llm import generate_pitch_email
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
     name = request.name.strip()
     email = request.email.strip()
     company_name = request.company_name.strip()
