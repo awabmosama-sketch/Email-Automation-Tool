@@ -1,21 +1,31 @@
+import base64
 import csv
+import hashlib
+import hmac
+import json
+import secrets
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from psycopg.errors import UniqueViolation
+from starlette.concurrency import run_in_threadpool
 
 from . import config
 from . import database
+from . import documents as document_store
 from .companies import (
     add_or_update_company_profile,
     load_company_profiles,
     save_all_company_profiles,
 )
+from .documents import DocumentError
 from .sender import send_email, wrap_in_html
 from .verifier import is_blocked_domain, is_valid_format, verify
 
@@ -24,6 +34,28 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONTACTS_FILE = config.CONTACTS_FILE
 FRONTEND_DIR = BASE_DIR / "frontend"
 FRONTEND_FILE = FRONTEND_DIR / "index.html"
+LOGIN_FILE = FRONTEND_DIR / "login.html"
+
+SESSION_COOKIE = "ea_session"
+SESSION_MAX_AGE = 7 * 24 * 60 * 60  # 7 days
+LOGIN_MAX_ATTEMPTS = 10
+LOGIN_WINDOW_SECONDS = 5 * 60
+PUBLIC_PATHS = {"/login", "/api/auth/login", "/api/auth/me", "/api/auth/logout"}
+PUBLIC_ASSETS = {"/frontend/login.css", "/frontend/login.js", "/favicon.ico"}
+
+_login_attempts: dict[str, list[float]] = {}
+_rate_buckets: dict[str, list[float]] = {}
+
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
+MAX_UPLOAD_BODY_BYTES = document_store.MAX_FILE_BYTES + 1024 * 1024
+SECURITY_CSP = (
+    "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; "
+    "form-action 'self'; object-src 'none'; img-src 'self' data:; "
+    "font-src 'self' https://fonts.gstatic.com; "
+    "style-src 'self' https://fonts.googleapis.com; "
+    "script-src 'self'; connect-src 'self'"
+)
 
 CONTACTS_FIELDNAMES = [
     "name",
@@ -37,6 +69,163 @@ CONTACTS_FIELDNAMES = [
 
 app = FastAPI(title="Email Automation API", version="1.0.0")
 app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
+
+
+def _session_key() -> bytes:
+    secret = (config.SESSION_SECRET or config.APP_PASSWORD) + ":" + config.APP_PASSWORD
+    return hashlib.sha256(("email-automation-session:" + secret).encode("utf-8")).digest()
+
+
+def _create_session(email: str) -> str:
+    payload = json.dumps(
+        {"email": email, "exp": int(time.time()) + SESSION_MAX_AGE},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    signature = hmac.new(_session_key(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return encoded + "." + signature
+
+
+def _read_session(token: str | None) -> str | None:
+    if not token:
+        return None
+    try:
+        encoded, signature = token.split(".", 1)
+        expected = hmac.new(_session_key(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return None
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        if int(payload.get("exp", 0)) < time.time():
+            return None
+        return str(payload.get("email") or "") or None
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def _session_email(request: Request) -> str | None:
+    return _read_session(request.cookies.get(SESSION_COOKIE))
+
+
+def _is_https(request: Request) -> bool:
+    forwarded = request.headers.get("x-forwarded-proto", "").lower()
+    return request.url.scheme == "https" or forwarded == "https"
+
+
+def _safe_equal(left: str, right: str) -> bool:
+    return secrets.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
+def _login_allowed(client_ip: str) -> bool:
+    now = time.time()
+    if len(_login_attempts) > 5000:
+        for key in [key for key, stamps in _login_attempts.items() if not stamps or max(stamps) < now - LOGIN_WINDOW_SECONDS]:
+            _login_attempts.pop(key, None)
+    recent = [stamp for stamp in _login_attempts.get(client_ip, []) if now - stamp < LOGIN_WINDOW_SECONDS]
+    _login_attempts[client_ip] = recent
+    return len(recent) < LOGIN_MAX_ATTEMPTS
+
+
+@app.middleware("http")
+async def require_session(request: Request, call_next):
+    """Redirects anonymous page requests to /login and rejects API calls."""
+    if not config.auth_enabled():
+        return await call_next(request)
+
+    if request.url.path in PUBLIC_PATHS or request.url.path in PUBLIC_ASSETS:
+        return await call_next(request)
+
+    if _session_email(request):
+        return await call_next(request)
+
+    path = request.url.path
+    if path.startswith("/api/") or path.startswith("/pitch/"):
+        return JSONResponse({"detail": "Authentication required."}, status_code=401)
+
+    next_path = path + ("?" + request.url.query if request.url.query else "")
+    return RedirectResponse("/login?next=" + quote(next_path, safe=""), status_code=303)
+
+
+def _rate_limited(bucket: str, identity: str, limit: int, window_seconds: int) -> bool:
+    key = f"{bucket}:{identity}"
+    now = time.time()
+    if len(_rate_buckets) > 5000:
+        for stale_key in [
+            candidate
+            for candidate, stamps in _rate_buckets.items()
+            if not stamps or max(stamps) < now - max(window_seconds, 300)
+        ]:
+            _rate_buckets.pop(stale_key, None)
+    recent = [stamp for stamp in _rate_buckets.get(key, []) if now - stamp < window_seconds]
+    _rate_buckets[key] = recent
+    if len(recent) >= limit:
+        return True
+    recent.append(now)
+    return False
+
+
+def enforce_rate_limit(request: Request, bucket: str, limit: int, window_seconds: int = 300) -> None:
+    identity = request.client.host if request.client else "unknown"
+    if _rate_limited(bucket, identity, limit, window_seconds):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please wait a few minutes and try again.",
+        )
+
+
+def _origin_allowed(request: Request, origin: str) -> bool:
+    origin = origin.rstrip("/").lower()
+    host_values = [
+        request.headers.get("host", ""),
+        request.headers.get("x-forwarded-host", ""),
+    ]
+    hosts = {
+        value.split(",")[0].strip().lower()
+        for value in host_values
+        if value and value.strip()
+    }
+    schemes = {
+        value.split(",")[0].strip().lower()
+        for value in (request.url.scheme, request.headers.get("x-forwarded-proto", ""))
+        if value and value.strip()
+    }
+    return any(origin == f"{scheme}://{host}" for scheme in ("http", "https") if scheme in schemes for host in hosts)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Applies body limits, same-origin checks, and hardening headers."""
+    path = request.url.path
+
+    content_length = request.headers.get("content-length", "")
+    if content_length.isdigit():
+        allowed = MAX_UPLOAD_BODY_BYTES if path == "/api/documents" else MAX_JSON_BODY_BYTES
+        if int(content_length) > allowed:
+            return JSONResponse({"detail": "Request is too large."}, status_code=413)
+
+    if request.method in UNSAFE_METHODS:
+        if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
+            return JSONResponse({"detail": "Cross-origin request blocked."}, status_code=403)
+        origin = request.headers.get("origin")
+        if origin and not _origin_allowed(request, origin):
+            return JSONResponse({"detail": "Cross-origin request blocked."}, status_code=403)
+
+    response = await call_next(request)
+
+    headers = response.headers
+    headers.setdefault("X-Content-Type-Options", "nosniff")
+    headers.setdefault("X-Frame-Options", "DENY")
+    headers.setdefault("Referrer-Policy", "no-referrer")
+    headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if not path.startswith(("/docs", "/redoc", "/openapi.json")):
+        headers.setdefault("Content-Security-Policy", SECURITY_CSP)
+    if _is_https(request):
+        headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if path.startswith("/api/") or path.startswith("/pitch/") or path in {"/login", "/"}:
+        headers.setdefault("Cache-Control", "no-store")
+
+    return response
 
 
 class ContactRequest(BaseModel):
@@ -74,6 +263,7 @@ class PitchSendRequest(BaseModel):
     body: str = Field(default="", max_length=20000)
     company_name: str = Field(default="", max_length=100)
     spam_score: int = Field(default=0, ge=0, le=10)
+    confirm_high_spam: bool = False
 
 
 class CompanyCreateRequest(BaseModel):
@@ -82,6 +272,11 @@ class CompanyCreateRequest(BaseModel):
     value_proposition: str = Field(default="", max_length=500)
     tone: str = Field(default="friendly-professional", max_length=100)
     signature: str = Field(default="", max_length=1000)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(default="", max_length=320)
+    password: str = Field(default="", max_length=200)
 
 
 def load_contacts() -> list[dict[str, str]]:
@@ -162,8 +357,6 @@ def update_contact(original_email: str, contact: ContactRequest) -> dict[str, st
     original_email = original_email.strip().lower()
 
     if database.is_configured():
-        if not any(row.get("email", "").lower() == original_email for row in load_contacts()):
-            raise HTTPException(status_code=404, detail="Contact not found.")
         try:
             updated = database.update_contact(original_email, new_contact)
         except UniqueViolation as error:
@@ -173,6 +366,8 @@ def update_contact(original_email: str, contact: ContactRequest) -> dict[str, st
             ) from error
         if not updated:
             raise HTTPException(status_code=404, detail="Contact not found.")
+        if original_email != new_contact["email"]:
+            document_store.move_documents("contact", original_email, new_contact["email"])
         new_contact["context"] = new_contact["details"]
         return new_contact
 
@@ -193,6 +388,8 @@ def update_contact(original_email: str, contact: ContactRequest) -> dict[str, st
 
     contacts[contact_index] = new_contact
     write_contacts(contacts)
+    if original_email != new_contact["email"]:
+        document_store.move_documents("contact", original_email, new_contact["email"])
     new_contact["context"] = new_contact["details"]
     return new_contact
 
@@ -202,6 +399,7 @@ def remove_contact(email: str) -> None:
     if database.is_configured():
         if not database.delete_contact(email):
             raise HTTPException(status_code=404, detail="Contact not found.")
+        document_store.delete_documents_for("contact", email)
         return
 
     contacts = load_contacts()
@@ -209,6 +407,7 @@ def remove_contact(email: str) -> None:
     if len(remaining) == len(contacts):
         raise HTTPException(status_code=404, detail="Contact not found.")
     write_contacts(remaining)
+    document_store.delete_documents_for("contact", email)
 
 
 def build_preview(contact: ContactRequest) -> dict[str, str]:
@@ -217,11 +416,13 @@ def build_preview(contact: ContactRequest) -> dict[str, str]:
     except ValueError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
+    reference = document_store.build_reference_text("contact", contact.email.strip().lower())
     try:
         generated = generate_email(
             contact.name.strip() or "there",
             contact.email.strip(),
             contact.context.strip() or contact.details.strip(),
+            documents=reference,
         )
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"AI preview failed: {error}") from error
@@ -238,15 +439,75 @@ def frontend() -> FileResponse:
     return FileResponse(FRONTEND_FILE)
 
 
+@app.get("/login", include_in_schema=False)
+def login_page(request: Request):
+    if not config.auth_enabled():
+        return RedirectResponse("/", status_code=303)
+    if _session_email(request):
+        return RedirectResponse("/", status_code=303)
+    return FileResponse(LOGIN_FILE)
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request) -> dict[str, Any]:
+    email = _session_email(request)
+    return {
+        "authenticated": bool(email),
+        "email": email or "",
+        "auth_enabled": config.auth_enabled(),
+    }
+
+
+@app.post("/api/auth/login")
+def auth_login(payload: LoginRequest, request: Request):
+    if not config.auth_enabled():
+        return {"email": "", "auth_enabled": False}
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not _login_allowed(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many sign-in attempts. Please wait a few minutes and try again.",
+        )
+
+    email = payload.email.strip().lower()
+    valid = _safe_equal(email, config.APP_EMAIL) & _safe_equal(payload.password, config.APP_PASSWORD)
+    if not valid:
+        _login_attempts.setdefault(client_ip, []).append(time.time())
+        raise HTTPException(status_code=401, detail="Incorrect email or password.")
+
+    _login_attempts.pop(client_ip, None)
+    response = JSONResponse({"email": config.APP_EMAIL, "auth_enabled": True})
+    response.set_cookie(
+        SESSION_COOKIE,
+        _create_session(config.APP_EMAIL),
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=_is_https(request),
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+def auth_logout() -> JSONResponse:
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "email-automation",
-        "contacts_loaded": len(load_contacts()),
+        "database_configured": database.is_configured(),
         "llm_provider": config.LLM_PROVIDER,
         "llm_configured": config.LLM_API_KEY_CONFIGURED,
-        "smtp_configured": bool(config.GMAIL_USER and config.GMAIL_APP_PASSWORD),
+        "smtp_configured": config.smtp_configured(),
+        "smtp_provider": config.SMTP_PROVIDER,
+        "auth_enabled": config.auth_enabled(),
     }
 
 
@@ -295,6 +556,7 @@ def delete_company(company_name: str) -> dict[str, Any]:
     if database.is_configured():
         if not database.delete_company_profile(company_name):
             raise HTTPException(status_code=404, detail="Company profile not found.")
+        document_store.delete_documents_for("company", company_name)
         profiles = database.load_company_profiles()
         return {"message": f"Company '{company_name}' removed.", "companies": list(profiles.keys())}
 
@@ -303,7 +565,82 @@ def delete_company(company_name: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Company profile not found.")
     del profiles[company_name]
     save_all_company_profiles(profiles)
+    document_store.delete_documents_for("company", company_name)
     return {"message": f"Company '{company_name}' removed.", "companies": list(profiles.keys())}
+
+
+@app.get("/api/documents")
+def get_documents(owner_type: str, owner_key: str) -> dict[str, Any]:
+    owner_type, owner_key = ensure_owner_exists(owner_type, owner_key)
+    return {
+        "documents": document_store.list_documents(owner_type, owner_key),
+        "max_documents": document_store.MAX_DOCUMENTS_PER_OWNER,
+        "max_file_mb": document_store.MAX_FILE_BYTES // (1024 * 1024),
+    }
+
+
+@app.post("/api/documents", status_code=201)
+async def add_document(
+    request: Request,
+    owner_type: str = Form(...),
+    owner_key: str = Form(...),
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    enforce_rate_limit(request, "documents:upload", limit=20)
+    owner_type, owner_key = ensure_owner_exists(owner_type, owner_key)
+
+    data = await file.read(document_store.MAX_FILE_BYTES + 1)
+    if len(data) > document_store.MAX_FILE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Files must be {document_store.MAX_FILE_BYTES // (1024 * 1024)} MB or smaller.",
+        )
+
+    try:
+        document = await run_in_threadpool(
+            document_store.add_document,
+            owner_type,
+            owner_key,
+            file.filename or "document",
+            data,
+        )
+    except DocumentError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return {
+        "message": f"Added '{document['filename']}'.",
+        "document": document,
+    }
+
+
+@app.delete("/api/documents/{document_id}")
+def remove_document(document_id: str, request: Request) -> dict[str, str]:
+    enforce_rate_limit(request, "documents:delete", limit=30)
+    if not document_store.delete_document(document_id):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    return {"message": "Document removed."}
+
+
+def ensure_owner_exists(owner_type: str, owner_key: str) -> tuple[str, str]:
+    try:
+        owner_type, owner_key = document_store.normalize_owner(owner_type, owner_key)
+    except DocumentError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    if owner_type == "contact":
+        emails = {row.get("email", "").strip().lower() for row in load_contacts()}
+        if owner_key not in emails:
+            raise HTTPException(
+                status_code=404,
+                detail="Save the contact first, then attach documents to it.",
+            )
+    else:
+        if owner_key not in load_company_profiles():
+            raise HTTPException(
+                status_code=404,
+                detail="Create the company first, then attach documents to it.",
+            )
+    return owner_type, owner_key
 
 
 @app.get("/api/contacts")
@@ -345,17 +682,52 @@ def log_send(email: str, status: str, subject: str) -> None:
         writer.writerow([datetime.now().isoformat(), email, status, subject])
 
 
-def enforce_spam_threshold(body: str) -> None:
+SENT_STATUSES = {"sent", "pitch:sent"}
+
+
+def sent_today_count() -> int:
+    if database.is_configured():
+        return database.count_sent_today()
+
+    log_file = config.LOG_FILE
+    if not log_file.exists():
+        return 0
+    today = datetime.now().date().isoformat()
+    with log_file.open(newline="", encoding="utf-8") as log:
+        return sum(
+            1
+            for row in csv.DictReader(log)
+            if row.get("status", "") in SENT_STATUSES
+            and (row.get("timestamp") or "").startswith(today)
+        )
+
+
+def enforce_daily_limit() -> None:
+    sent_today = sent_today_count()
+    if sent_today >= config.DAILY_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Daily send limit reached ({sent_today}/{config.DAILY_LIMIT}). "
+                "Increase DAILY_LIMIT to send more today."
+            ),
+        )
+
+
+def score_spam(body: str) -> dict[str, Any]:
     try:
         from .llm import check_spam_score
     except ValueError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
     try:
-        spam = check_spam_score(body)
+        return check_spam_score(body)
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"Spam check failed: {error}") from error
 
+
+def enforce_spam_threshold(body: str) -> None:
+    spam = score_spam(body)
     if spam["score"] >= 7:
         raise HTTPException(
             status_code=422,
@@ -364,24 +736,30 @@ def enforce_spam_threshold(body: str) -> None:
 
 
 @app.post("/api/send")
-def send_contact(message: SendRequest) -> dict[str, Any]:
+def send_contact(message: SendRequest, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "email:send", limit=10)
     email = message.email.strip()
     if not is_valid_format(email):
         raise HTTPException(status_code=422, detail="Please provide a valid email address.")
     if is_blocked_domain(email):
         raise HTTPException(status_code=422, detail="Disposable email domains are not allowed.")
 
+    enforce_daily_limit()
     enforce_spam_threshold(message.body)
     html = wrap_in_html(message.body, config.SENDER_NAME)
-    success = send_email(email, message.subject.strip(), html, message.body)
+    success, send_error = send_email(email, message.subject.strip(), html, message.body)
     log_send(email, "sent" if success else "failed", message.subject.strip())
     if not success:
-        raise HTTPException(status_code=502, detail="Email could not be sent. Check SMTP settings.")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Email could not be sent: {send_error}",
+        )
     return {"message": f"Email sent to {email}.", "email": email, "subject": message.subject.strip()}
 
 
 @app.post("/api/verify")
-def verify_contact(contact: ContactRequest, check_dns: bool = False) -> dict[str, Any]:
+def verify_contact(contact: ContactRequest, request: Request, check_dns: bool = False) -> dict[str, Any]:
+    enforce_rate_limit(request, "email:verify", limit=30)
     email = contact.email.strip()
     if not is_valid_format(email):
         return {"email": email, "valid": False, "reason": "invalid_format"}
@@ -394,7 +772,8 @@ def verify_contact(contact: ContactRequest, check_dns: bool = False) -> dict[str
 
 
 @app.post("/api/preview")
-def preview(contact: ContactRequest) -> dict[str, Any]:
+def preview(contact: ContactRequest, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "llm:preview", limit=20)
     if not is_valid_format(contact.email.strip()):
         raise HTTPException(status_code=422, detail="Please provide a valid email address.")
     return build_preview(contact)
@@ -402,7 +781,8 @@ def preview(contact: ContactRequest) -> dict[str, Any]:
 
 @app.post("/pitch/generate")
 @app.post("/api/pitch/generate")
-def generate_pitch(request: PitchGenerateRequest) -> dict[str, Any]:
+def generate_pitch(request: PitchGenerateRequest, http_request: Request) -> dict[str, Any]:
+    enforce_rate_limit(http_request, "llm:pitch", limit=20)
     try:
         from .llm import generate_pitch_email
     except ValueError as error:
@@ -450,6 +830,12 @@ def generate_pitch(request: PitchGenerateRequest) -> dict[str, Any]:
             target_role=target_role,
             target_industry=target_industry,
             details=details,
+            recipient_documents=document_store.build_reference_text(
+                "contact", email.lower()
+            ),
+            company_documents=document_store.build_reference_text(
+                "company", company_name
+            ),
         )
     except Exception as err:
         raise HTTPException(
@@ -466,7 +852,8 @@ def generate_pitch(request: PitchGenerateRequest) -> dict[str, Any]:
 
 @app.post("/pitch/send")
 @app.post("/api/pitch/send")
-def send_pitch(request: PitchSendRequest) -> dict[str, Any]:
+def send_pitch(request: PitchSendRequest, http_request: Request) -> dict[str, Any]:
+    enforce_rate_limit(http_request, "email:pitch-send", limit=10)
     recipient_email = request.recipient_email.strip()
     subject = request.subject.strip()
     body = request.body.strip()
@@ -491,24 +878,32 @@ def send_pitch(request: PitchSendRequest) -> dict[str, Any]:
             status_code=400,
             detail="Invalid recipient email format or domain is blocked.",
         )
-    if request.spam_score >= 7:
+
+    enforce_daily_limit()
+    spam = score_spam(body)
+    server_score = int(spam.get("score", 0) or 0)
+    if server_score >= 7 and not request.confirm_high_spam:
         raise HTTPException(
             status_code=422,
-            detail=f"Pitch blocked because its spam score is {request.spam_score}/10.",
+            detail=(
+                f"Pitch blocked because its spam score is {server_score}/10: "
+                f"{spam.get('issues', 'unknown')}. Explicit confirmation is required to send it."
+            ),
         )
 
     sender_name = company_name or config.SENDER_NAME
     html = wrap_in_html(body, sender_name)
-    success = send_email(recipient_email, subject, html, body)
+    success, send_error = send_email(recipient_email, subject, html, body)
     log_send(recipient_email, "pitch:sent" if success else "pitch:failed", subject)
 
     if success:
         return {
             "status": "sent",
             "message": f"Pitch email successfully sent to {recipient_email}.",
+            "spam_score": server_score,
         }
-    else:
-        return {
-            "status": "failed",
-            "message": "Pitch email delivery failed. Please check SMTP settings.",
-        }
+
+    raise HTTPException(
+        status_code=502,
+        detail=f"Pitch email delivery failed: {send_error}",
+    )

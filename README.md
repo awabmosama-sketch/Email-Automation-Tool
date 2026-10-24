@@ -1,6 +1,6 @@
 # Email Automation
 
-A FastAPI application for managing contacts, generating personalized email previews with Groq, and sending approved messages through Gmail SMTP.
+A FastAPI application for managing contacts, generating personalized email previews with Groq, and sending approved messages through Gmail or Zoho SMTP.
 
 ## Project Structure
 
@@ -13,10 +13,11 @@ email-automation/
 │   ├── database.py     # Neon PostgreSQL persistence
 │   ├── migrate_to_neon.py # One-time local data migration
 │   ├── llm.py          # Groq email & pitch generation, spam scoring
-│   ├── main.py         # Command-line batch sender
-│   ├── sender.py       # Gmail SMTP delivery
+│   ├── main.py         # Command-line batch sender (Neon-aware)
+│   ├── sender.py       # SMTP delivery (Gmail, Zoho, or custom)
 │   └── verifier.py     # Email format, domain, and MX checks
-├── frontend/           # Browser dashboard assets (Pitch Generator & Preview)
+├── frontend/           # Dashboard + sign-in page (Pitch Generator & Preview)
+├── .local-data/        # Local CSV/JSON fallback when DATABASE_URL is unset
 ├── api/index.py        # Vercel FastAPI entrypoint
 ├── vercel.json         # Vercel routing configuration
 ├── .env.example        # Safe environment variable template
@@ -42,6 +43,35 @@ Copy-Item .env.example .env
 
 The default provider is Groq. To use Anthropic instead, set `LLM_PROVIDER=anthropic` and provide `ANTHROPIC_API_KEY` plus an optional `ANTHROPIC_MODEL`.
 
+## Email Sending (SMTP)
+
+`SMTP_PROVIDER` chooses the mail service and its defaults:
+
+| Provider | Host | Port | Security |
+|---|---|---|---|
+| `gmail` | `smtp.gmail.com` | 465 | SSL |
+| `zoho` | `smtp.zoho.com` | 465 | SSL |
+| `custom` | set `SMTP_HOST` | set `SMTP_PORT` | set `SMTP_SECURITY` |
+
+For Zoho, fill in only these two values in `.env`:
+
+```dotenv
+SMTP_PROVIDER=zoho
+SMTP_USER=you@yourdomain.com
+SMTP_PASSWORD=your_zoho_app_password
+```
+
+Notes:
+
+- `SMTP_USER` must be the full Zoho mailbox address, and the `From` address comes from it. It can be the account address or a verified alias.
+- If 2-step verification is enabled on the Zoho account, create an **App Password** (Zoho Accounts → Security → App Passwords) and use that as `SMTP_PASSWORD`.
+- Zoho has regional data centres. If your account is not on the global domain, uncomment and set `SMTP_HOST` to `smtp.zoho.in`, `smtp.zoho.eu`, `smtp.zoho.com.au`, or `smtp.zoho.jp`.
+- Port `587` with STARTTLS is also supported: set `SMTP_PORT=587` and `SMTP_SECURITY=starttls`.
+- Legacy `GMAIL_USER` / `GMAIL_APP_PASSWORD` still work, but only when `SMTP_PROVIDER=gmail`.
+- `/api/health` reports `smtp_configured` and the active `smtp_provider`.
+
+Sign-in is enabled when both `APP_EMAIL` and `APP_PASSWORD` are set. Visitors then get a dedicated login page, and the dashboard/API require a signed session cookie (valid for 7 days). Set `SESSION_SECRET` to keep sessions valid across restarts. With either value unset, authentication is disabled, which is only appropriate for local development.
+
 Set `DATABASE_URL` to a Neon PostgreSQL connection string to persist contacts, company profiles, and send logs in the database. The required tables are created automatically on the first database request. Without `DATABASE_URL`, the app keeps using the local CSV and JSON files.
 
 To migrate the existing local contacts and company profiles after setting `DATABASE_URL`, run:
@@ -56,6 +86,12 @@ Run this command from the project root:
 
 ```powershell
 .\venv\Scripts\python.exe -m uvicorn backend.app:app --reload
+```
+
+The project also includes a root `main.py` entrypoint, so this shorter command works too:
+
+```powershell
+uvicorn main:app --reload
 ```
 
 Open <http://127.0.0.1:8000> for the dashboard or <http://127.0.0.1:8000/docs> for the API documentation.
@@ -76,17 +112,17 @@ The dashboard can:
 .\venv\Scripts\python.exe -m backend.main
 ```
 
-The batch sender observes `DAILY_LIMIT`, validates contacts, checks spam scores, and writes delivery results to Neon when `DATABASE_URL` is configured.
+The dashboard and the batch sender both observe `DAILY_LIMIT` by counting today's successful sends in Neon or `.local-data/sent_log.csv`. The batch sender also validates contacts and checks spam scores.
 
 ## Deliverability Requirements
 
-No application can guarantee that every receiving provider will place a message in the inbox. The code now sends a standards-compliant multipart message, includes normal `Date` and `Message-ID` headers, provides unsubscribe metadata, escapes HTML, and blocks messages with a spam score of 7 or higher.
+No application can guarantee that every receiving provider will place a message in the inbox. The code now sends a standards-compliant multipart message, includes normal `Date` and `Message-ID` headers, provides a `List-Unsubscribe` mailto header, escapes HTML, and blocks messages with a spam score of 7 or higher.
 
 For reliable delivery, configure the sending domain as well:
 
 1. Use a domain-based sender address rather than a new or mismatched free mailbox when possible.
-2. Publish SPF for the service that sends mail. For Google Workspace, this normally includes `include:_spf.google.com`.
-3. Enable DKIM signing in Google Workspace and publish the DKIM DNS record it provides.
+2. Publish SPF for the service that sends mail. For Zoho, this is normally `include:zoho.com` (or the regional variant shown in Zoho's admin panel); for Google Workspace it normally includes `include:_spf.google.com`.
+3. Enable DKIM signing in Zoho Mail Admin or Google Workspace and publish the DKIM DNS record it provides.
 4. Publish a DMARC record for the sender domain, starting with a monitoring policy such as `p=none` while verifying reports.
 5. Keep the `From` domain aligned with SPF/DKIM, send only to opted-in recipients, remove bounces, and ramp volume gradually.
 6. Test with Gmail's **Show original** and a mail-tester service to confirm SPF, DKIM, and DMARC pass.
@@ -97,7 +133,7 @@ The SMTP credentials authenticate delivery, but they cannot override a receiver'
 
 The system can generate personalized B2B service pitch emails on behalf of a client company (such as **F-Tune**, **CloudPulse**, or **GrowthWave**):
 
-- **Company Profiles (`backend/companies.py` & `data/companies.json`)**: Persistent JSON storage for pitching brands defining offered services, value proposition, tone, and signature block.
+- **Company Profiles (`backend/companies.py` & `.local-data/companies.json`)**: Persistent storage for pitching brands defining offered services, value proposition, tone, and signature block.
 - **Personalized Pitch Generation (`backend/llm.py`)**: The LLM analyzes the recipient's role and industry, chooses only the 1-2 most relevant services, enforces brand voice and signature, and avoids spam trigger words.
 - **Endpoints**:
   - `GET /companies`: Returns available company profiles.
@@ -106,7 +142,7 @@ The system can generate personalized B2B service pitch emails on behalf of a cli
   - `PUT /api/contacts/{email}`: Saves changes to an existing contact.
   - `DELETE /api/contacts/{email}`: Removes an existing contact.
   - `POST /pitch/generate`: Validates email and generates personalized pitch with spam scoring.
-  - `POST /pitch/send`: Delivers pitch email via Gmail SMTP and logs delivery tagged as `pitch:sent` or `pitch:failed` in `data/sent_log.csv`.
+  - `POST /pitch/send`: Delivers pitch email via the configured SMTP provider after recomputing the spam score server-side. A score of 7+ requires an explicit `confirm_high_spam` override. Delivery is tagged as `pitch:sent` or `pitch:failed` in Neon or `.local-data/sent_log.csv`.
 - **Manual Company Registration UI**: Use the **"+ New"** button next to the company dropdown to open the modal and register any client company on the fly.
 - **Live Spam Guard & Safety**: Displays color-coded spam scores (green &le; 3, yellow 4-6, red &ge; 7) and enforces explicit confirmation dialogs before sending high-risk messages.
 
@@ -120,14 +156,14 @@ python -m compileall -q backend
 node --check frontend\app.js
 ```
 
-Keep `.env`, `venv/`, `.local-data/`, and generated caches out of version control. Do not commit API keys or Gmail app passwords.
+Keep `.env`, `venv/`, `.local-data/`, and generated caches out of version control. Do not commit API keys or SMTP/app passwords.
 
 ## Deploy On Vercel
 
 The repository includes a Vercel Python function adapter in `api/index.py` and the routing configuration in `vercel.json`.
 
 1. Import the repository into Vercel.
-2. Add `DATABASE_URL`, `LLM_PROVIDER`, the matching `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, `GMAIL_USER`, `GMAIL_APP_PASSWORD`, and `SENDER_NAME` as project environment variables.
+2. Add `DATABASE_URL`, `LLM_PROVIDER`, the matching `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, `SMTP_PROVIDER`, `SMTP_USER`, `SMTP_PASSWORD`, `SENDER_NAME`, `APP_EMAIL`, `APP_PASSWORD`, and `SESSION_SECRET` as project environment variables. Add `SMTP_HOST` only when using a regional Zoho host or `SMTP_PROVIDER=custom`.
 3. Deploy with the default Vercel build settings.
 
 When `DATABASE_URL` is configured, Neon is used for durable shared contacts, company profiles, and send logs. The file-based fallback remains available for local development.

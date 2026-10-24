@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in · Email Automation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/frontend/login.css">
+</head>
+<body>
+  <div class="shell">
+    <a class="brand" href="/login" aria-label="Email Automation">
+      <span class="brand-mark">EA</span>
+      <span>
+        <strong>Email Automation</strong>
+        <small>Outreach control room</small>
+      </span>
+    </a>
+
+    <div class="card">
+      <p class="eyebrow">Team access</p>
+      <h1>Sign in</h1>
+      <p class="sub">Use the team account to open the dashboard.</p>
+
+      <form id="login-form" novalidate>
+        <label>Email address
+          <input id="login-email" type="email" name="email" placeholder="you@company.com" autocomplete="username" maxlength="320" required autofocus>
+        </label>
+        <label>Password
+          <span class="password-wrap">
+            <input id="login-password" type="password" name="password" placeholder="Your team password" autocomplete="current-password" maxlength="200" required>
+            <button type="button" class="toggle" id="toggle-password" aria-label="Show password">Show</button>
+          </span>
+        </label>
+        <div id="login-error" class="error" role="alert"></div>
+        <button type="submit" class="submit" id="login-submit">Sign in</button>
+      </form>
+
+      <div class="foot">Authorized access only · <strong>Email Automation</strong></div>
+    </div>
+  </div>
+
+  <script src="/frontend/login.js"></script>
+</body>
+</html>

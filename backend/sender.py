@@ -1,9 +1,13 @@
+import logging
 import smtplib
 from html import escape
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid
+
 from . import config
+
+logger = logging.getLogger(__name__)
 
 
 def wrap_in_html(body, sender_name):
@@ -11,8 +15,9 @@ def wrap_in_html(body, sender_name):
     html_paragraphs = ""
     for p in paragraphs:
         if p.strip():
-            cleaned = p.strip().replace("\n", "<br>")
-            html_paragraphs += "<p>" + escape(cleaned).replace("&lt;br&gt;", "<br>") + "</p>"
+            cleaned = escape(p.strip())
+            cleaned = cleaned.replace("\n", "<br>")
+            html_paragraphs += "<p>" + cleaned + "</p>"
 
     html = "<!DOCTYPE html>"
     html += "<html><head><meta charset='UTF-8'></head>"
@@ -25,29 +30,58 @@ def wrap_in_html(body, sender_name):
     return html
 
 
-def send_email(to_email, subject, html_body, text_body=""):
+def _smtp_connection():
+    """Opens an SMTP connection using the configured security mode."""
+    if config.SMTP_SECURITY == "starttls":
+        server = smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=30)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        return server
+    return smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT, timeout=30)
+
+
+def send_email(to_email, subject, html_body, text_body="") -> tuple[bool, str]:
+    """Sends the message over the configured SMTP provider. Returns (sent, error_message)."""
+    if not config.smtp_configured():
+        return False, (
+            "Email sending is not configured. Set SMTP_USER and SMTP_PASSWORD in .env "
+            f"for SMTP_PROVIDER={config.SMTP_PROVIDER}."
+        )
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = formataddr((config.SENDER_NAME, config.GMAIL_USER))
+    msg["From"] = formataddr((config.SENDER_NAME, config.SMTP_USER))
     msg["To"] = to_email
-    msg["Reply-To"] = config.GMAIL_USER
+    msg["Reply-To"] = config.SMTP_USER
     msg["Date"] = formatdate(localtime=False)
     msg["Message-ID"] = make_msgid()
     msg["X-Mailer"] = "Email Automation"
-    msg["List-Unsubscribe"] = "<mailto:" + config.GMAIL_USER + "?subject=unsubscribe>"
-    msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+    msg["List-Unsubscribe"] = "<mailto:" + config.SMTP_USER + "?subject=unsubscribe>"
 
     msg.attach(MIMEText(text_body or "Please view this message in an HTML-capable email client.", "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
-        with smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT) as server:
-            server.login(config.GMAIL_USER, config.GMAIL_APP_PASSWORD)
-            server.sendmail(config.GMAIL_USER, to_email, msg.as_string())
-        return True
-    except smtplib.SMTPAuthenticationError:
-        print("   [auth failed] Check App Password in .env")
-        return False
-    except Exception as e:
-        print("   [send failed] " + str(e))
-        return False
+        with _smtp_connection() as server:
+            server.login(config.SMTP_USER, config.SMTP_PASSWORD)
+            server.sendmail(config.SMTP_USER, to_email, msg.as_string())
+        return True, ""
+    except smtplib.SMTPAuthenticationError as error:
+        logger.error("SMTP authentication failed: %s", error)
+        return False, (
+            f"SMTP authentication failed for {config.SMTP_PROVIDER}. "
+            "Check SMTP_USER and SMTP_PASSWORD (use an app password if 2FA is enabled)."
+        )
+    except smtplib.SMTPException as error:
+        logger.exception("Email send failed")
+        return False, f"SMTP error: {error}" if str(error) else "Unknown SMTP error."
+    except OSError as error:
+        logger.exception("SMTP connection failed")
+        return False, (
+            f"Could not connect to {config.SMTP_HOST}:{config.SMTP_PORT} "
+            f"({config.SMTP_SECURITY}). {error}"
+        )
+    except Exception as error:
+        logger.exception("Email send failed")
+        return False, str(error) or "Unknown SMTP error."

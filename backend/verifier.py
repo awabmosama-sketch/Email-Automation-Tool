@@ -1,9 +1,10 @@
 import re
 import dns.resolver
 
-# Standard email format check
+# Standard email format check (single @, valid domain labels, no leading/trailing dots)
 EMAIL_REGEX = re.compile(
-    r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+"
+    r"@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$"
 )
 
 # Disposable / known-bad domains (sample — aap extend kar sakte ho)
@@ -20,7 +21,15 @@ def is_valid_format(email: str) -> bool:
     """Syntax check — kya email valid format mein hai?"""
     if not email or not isinstance(email, str):
         return False
-    return bool(EMAIL_REGEX.match(email.strip()))
+    email = email.strip()
+    if len(email) > 254:
+        return False
+    local_part, _, domain = email.rpartition("@")
+    if not local_part or len(local_part) > 64 or ".." in local_part:
+        return False
+    if local_part.startswith(".") or local_part.endswith("."):
+        return False
+    return bool(EMAIL_REGEX.match(email))
 
 
 def has_mx_record(email: str) -> bool:
@@ -29,20 +38,19 @@ def has_mx_record(email: str) -> bool:
     domain = email.split("@")[-1].lower().strip()
 
     try:
-        answers = dns.resolver.resolve(domain, "MX")
+        answers = dns.resolver.resolve(domain, "MX", lifetime=5)
         return len(answers) > 0
-    except (dns.resolver.NXDOMAIN,
-            dns.resolver.NoAnswer,
-            dns.resolver.NoNameservers,
-            dns.resolver.Timeout,
-            Exception):
+    except Exception:
         return False
 
 
 def is_blocked_domain(email: str) -> bool:
-    """Disposable / spam-trap domains block karo."""
+    """Disposable / spam-trap domains block karo (subdomains included)."""
     domain = email.split("@")[-1].lower().strip()
-    return domain in BLOCKED_DOMAINS
+    return any(
+        domain == blocked or domain.endswith("." + blocked)
+        for blocked in BLOCKED_DOMAINS
+    )
 
 
 def verify(email: str) -> tuple:

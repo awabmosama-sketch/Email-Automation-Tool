@@ -63,10 +63,18 @@ def load_company_profiles() -> dict:
     """Loads company profiles from Neon or the optional local fallback."""
     if database.is_configured():
         profiles = database.load_company_profiles()
-        if not profiles:
+        seeded = database.get_meta("companies_seeded") is not None
+        if profiles:
+            if not seeded:
+                database.set_meta("companies_seeded", "1")
+            return profiles
+        # Seed the starter profiles only on a brand-new database. Once the
+        # marker exists, an empty table means the user deleted every company.
+        if not seeded:
             save_all_company_profiles(DEFAULT_COMPANY_PROFILES)
+            database.set_meta("companies_seeded", "1")
             return dict(DEFAULT_COMPANY_PROFILES)
-        return profiles
+        return {}
 
     companies_file = config.COMPANIES_FILE
     if not companies_file.exists():
@@ -85,7 +93,7 @@ def load_company_profiles() -> dict:
 
 
 def save_all_company_profiles(profiles: dict) -> None:
-    """Persists all company profiles to data/companies.json."""
+    """Persists all company profiles to the local fallback file."""
     if database.is_configured():
         database.save_company_profiles(profiles)
         return
@@ -103,7 +111,7 @@ def add_or_update_company_profile(
     tone: str,
     signature: str,
 ) -> dict:
-    """Adds a new company profile and saves it to data/companies.json."""
+    """Adds a new company profile and saves it to companies storage."""
     clean_name = name.strip()
     if not clean_name:
         raise ValueError("Company name cannot be blank.")
