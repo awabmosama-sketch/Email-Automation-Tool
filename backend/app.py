@@ -444,11 +444,15 @@ def frontend() -> FileResponse:
 
 
 @app.get("/login", include_in_schema=False)
+@app.get("/login/", include_in_schema=False)
 def login_page(request: Request):
     if not config.auth_enabled():
         return RedirectResponse("/", status_code=303)
     if _session_email(request):
-        return RedirectResponse("/", status_code=303)
+        next_url = request.query_params.get("next") or "/"
+        if next_url.startswith("//") or not next_url.startswith("/"):
+            next_url = "/"
+        return RedirectResponse(next_url, status_code=303)
     return FileResponse(LOGIN_FILE)
 
 
