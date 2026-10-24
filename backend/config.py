@@ -68,6 +68,12 @@ SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip()
 
 
 def auth_enabled() -> bool:
+    # Allow explicit disabling for local development if needed
+    if os.getenv("AUTH_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
+    # On Vercel/serverless, enforce auth by default for security
+    if os.getenv("VERCEL"):
+        return True
     return bool(APP_EMAIL and APP_PASSWORD)
 
 # Sending limits

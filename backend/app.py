@@ -132,17 +132,21 @@ async def require_session(request: Request, call_next):
     if not config.auth_enabled():
         return await call_next(request)
 
-    if request.url.path in PUBLIC_PATHS or request.url.path in PUBLIC_ASSETS:
+    path = request.url.path
+    # Normalize trailing slash
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+
+    if path in PUBLIC_PATHS or path in PUBLIC_ASSETS or path.startswith("/frontend/"):
         return await call_next(request)
 
     if _session_email(request):
         return await call_next(request)
 
-    path = request.url.path
     if path.startswith("/api/") or path.startswith("/pitch/"):
         return JSONResponse({"detail": "Authentication required."}, status_code=401)
 
-    next_path = path + ("?" + request.url.query if request.url.query else "")
+    next_path = request.url.path + ("?" + request.url.query if request.url.query else "")
     return RedirectResponse("/login?next=" + quote(next_path, safe=""), status_code=303)
 
 
