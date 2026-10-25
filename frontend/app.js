@@ -825,6 +825,10 @@ async function postPitch(confirmHighSpam) {
       company_name: $("pitch-company").value,
       spam_score: state.pitchSpamScore,
       confirm_high_spam: confirmHighSpam,
+      smtp_provider: $("pitch-smtp-provider")?.value || undefined,
+      smtp_user: $("pitch-smtp-user")?.value.trim() || undefined,
+      smtp_password: $("pitch-smtp-password")?.value.trim() || undefined,
+      sender_name: $("pitch-sender-name")?.value.trim() || undefined,
     }),
   });
 }

@@ -268,6 +268,10 @@ class PitchSendRequest(BaseModel):
     company_name: str = Field(default="", max_length=100)
     spam_score: int = Field(default=0, ge=0, le=10)
     confirm_high_spam: bool = False
+    smtp_provider: str | None = Field(default=None, max_length=20)
+    smtp_user: str | None = Field(default=None, max_length=320)
+    smtp_password: str | None = Field(default=None, max_length=200)
+    sender_name: str | None = Field(default=None, max_length=100)
 
 
 class CompanyCreateRequest(BaseModel):
@@ -899,9 +903,18 @@ def send_pitch(request: PitchSendRequest, http_request: Request) -> dict[str, An
             ),
         )
 
-    sender_name = company_name or config.SENDER_NAME
+    sender_name = request.sender_name.strip() if request.sender_name and request.sender_name.strip() else (company_name or config.SENDER_NAME)
     html = wrap_in_html(body, sender_name)
-    success, send_error = send_email(recipient_email, subject, html, body)
+    success, send_error = send_email(
+        recipient_email,
+        subject,
+        html,
+        body,
+        smtp_provider=request.smtp_provider,
+        smtp_user=request.smtp_user,
+        smtp_password=request.smtp_password,
+        sender_name=sender_name,
+    )
     log_send(recipient_email, "pitch:sent" if success else "pitch:failed", subject)
 
     if success:

@@ -30,47 +30,113 @@ def wrap_in_html(body, sender_name):
     return html
 
 
-def _smtp_connection():
+_SMTP_PROVIDER_DEFAULTS = {
+    "gmail": ("smtp.gmail.com", 465, "ssl"),
+    "zoho": ("smtp.zoho.com", 465, "ssl"),
+    "custom": ("", 587, "starttls"),
+}
+
+
+def _get_smtp_settings(provider: str | None = None):
+    provider = (provider or config.SMTP_PROVIDER or "gmail").strip().lower()
+    if provider not in _SMTP_PROVIDER_DEFAULTS:
+        provider = "custom"
+
+    defaults = _SMTP_PROVIDER_DEFAULTS[provider]
+    if provider == "gmail":
+        host = config.SMTP_HOST or defaults[0]
+        port = config.SMTP_PORT or defaults[1]
+        security = config.SMTP_SECURITY or defaults[2]
+        user = config.GMAIL_USER or config.SMTP_USER
+        password = config.GMAIL_APP_PASSWORD or config.SMTP_PASSWORD
+    elif provider == "zoho":
+        host = config.SMTP_HOST or defaults[0]
+        port = config.SMTP_PORT or defaults[1]
+        security = config.SMTP_SECURITY or defaults[2]
+        user = config.SMTP_USER
+        password = config.SMTP_PASSWORD
+    else:
+        host = config.SMTP_HOST
+        port = config.SMTP_PORT
+        security = config.SMTP_SECURITY
+        user = config.SMTP_USER
+        password = config.SMTP_PASSWORD
+
+    if security not in {"ssl", "starttls"}:
+        security = defaults[2]
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = defaults[1]
+
+    return {
+        "provider": provider,
+        "host": host,
+        "port": port,
+        "security": security,
+        "user": user or "",
+        "password": password or "",
+    }
+
+
+def _smtp_connection(settings: dict):
     """Opens an SMTP connection using the configured security mode."""
-    if config.SMTP_SECURITY == "starttls":
-        server = smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=30)
+    if settings["security"] == "starttls":
+        server = smtplib.SMTP(settings["host"], settings["port"], timeout=30)
         server.ehlo()
         server.starttls()
         server.ehlo()
         return server
-    return smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT, timeout=30)
+    return smtplib.SMTP_SSL(settings["host"], settings["port"], timeout=30)
 
 
-def send_email(to_email, subject, html_body, text_body="") -> tuple[bool, str]:
+def send_email(
+    to_email,
+    subject,
+    html_body,
+    text_body="",
+    smtp_provider: str | None = None,
+    smtp_user: str | None = None,
+    smtp_password: str | None = None,
+    sender_name: str | None = None,
+) -> tuple[bool, str]:
     """Sends the message over the configured SMTP provider. Returns (sent, error_message)."""
-    if not config.smtp_configured():
+    settings = _get_smtp_settings(smtp_provider)
+
+    if smtp_user:
+        settings["user"] = smtp_user.strip()
+    if smtp_password:
+        settings["password"] = smtp_password.strip()
+
+    if not settings["user"] or not settings["password"] or not settings["host"]:
         return False, (
             "Email sending is not configured. Set SMTP_USER and SMTP_PASSWORD in .env "
-            f"for SMTP_PROVIDER={config.SMTP_PROVIDER}."
+            f"for SMTP_PROVIDER={settings['provider']}."
         )
 
+    from_name = sender_name or config.SENDER_NAME
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = formataddr((config.SENDER_NAME, config.SMTP_USER))
+    msg["From"] = formataddr((from_name, settings["user"]))
     msg["To"] = to_email
-    msg["Reply-To"] = config.SMTP_USER
+    msg["Reply-To"] = settings["user"]
     msg["Date"] = formatdate(localtime=False)
     msg["Message-ID"] = make_msgid()
     msg["X-Mailer"] = "Email Automation"
-    msg["List-Unsubscribe"] = "<mailto:" + config.SMTP_USER + "?subject=unsubscribe>"
+    msg["List-Unsubscribe"] = "<mailto:" + settings["user"] + "?subject=unsubscribe>"
 
     msg.attach(MIMEText(text_body or "Please view this message in an HTML-capable email client.", "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
-        with _smtp_connection() as server:
-            server.login(config.SMTP_USER, config.SMTP_PASSWORD)
-            server.sendmail(config.SMTP_USER, to_email, msg.as_string())
+        with _smtp_connection(settings) as server:
+            server.login(settings["user"], settings["password"])
+            server.sendmail(settings["user"], to_email, msg.as_string())
         return True, ""
     except smtplib.SMTPAuthenticationError as error:
         logger.error("SMTP authentication failed: %s", error)
         return False, (
-            f"SMTP authentication failed for {config.SMTP_PROVIDER}. "
+            f"SMTP authentication failed for {settings['provider']}. "
             "Check SMTP_USER and SMTP_PASSWORD (use an app password if 2FA is enabled)."
         )
     except smtplib.SMTPException as error:
@@ -79,8 +145,8 @@ def send_email(to_email, subject, html_body, text_body="") -> tuple[bool, str]:
     except OSError as error:
         logger.exception("SMTP connection failed")
         return False, (
-            f"Could not connect to {config.SMTP_HOST}:{config.SMTP_PORT} "
-            f"({config.SMTP_SECURITY}). {error}"
+            f"Could not connect to {settings['host']}:{settings['port']} "
+            f"({settings['security']}). {error}"
         )
     except Exception as error:
         logger.exception("Email send failed")
