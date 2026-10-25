@@ -249,6 +249,7 @@ class SendRequest(BaseModel):
     context: str = Field(default="", max_length=1000)
     subject: str = Field(..., min_length=1, max_length=200)
     body: str = Field(..., min_length=1, max_length=10000)
+    smtp_provider: str | None = Field(default=None, max_length=20)
 
 
 class PitchGenerateRequest(BaseModel):
@@ -759,7 +760,13 @@ def send_contact(message: SendRequest, request: Request) -> dict[str, Any]:
     enforce_daily_limit()
     enforce_spam_threshold(message.body)
     html = wrap_in_html(message.body, config.SENDER_NAME)
-    success, send_error = send_email(email, message.subject.strip(), html, message.body)
+    success, send_error = send_email(
+        email,
+        message.subject.strip(),
+        html,
+        message.body,
+        smtp_provider=message.smtp_provider,
+    )
     log_send(email, "sent" if success else "failed", message.subject.strip())
     if not success:
         raise HTTPException(

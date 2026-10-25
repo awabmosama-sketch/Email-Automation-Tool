@@ -8,6 +8,8 @@ const state = {
   editingCompany: null,
   search: "",
   pitchSpamScore: 0,
+  smtpProvider: "",
+  smtpDefaultProvider: "zoho",
   auth: { enabled: false, email: "" },
   contactDocs: [],
   companyDocs: [],
@@ -99,6 +101,60 @@ async function withBusy(button, label, task) {
 function setStatus(online) {
   $("status-dot").classList.toggle("ready", online);
   $("status-text").textContent = online ? "API online" : "API offline";
+}
+
+/* ------------------------------------------------------------------ */
+/* SMTP provider                                                       */
+/* ------------------------------------------------------------------ */
+
+const SMTP_PROVIDER_LABELS = { zoho: "Zoho", gmail: "Gmail", custom: "Custom" };
+
+function providerName(provider) {
+  return SMTP_PROVIDER_LABELS[provider] || "Default";
+}
+
+function activeSmtpProvider() {
+  return state.smtpProvider || state.smtpDefaultProvider;
+}
+
+function nextSmtpProvider() {
+  return activeSmtpProvider() === "gmail" ? "zoho" : "gmail";
+}
+
+function updateSmtpToggle() {
+  const active = activeSmtpProvider();
+  const next = nextSmtpProvider();
+  $("smtp-toggle-label").textContent = providerName(active);
+  const button = $("smtp-toggle-button");
+  button.title = `Switch SMTP provider to ${providerName(next)}`;
+  button.setAttribute(
+    "aria-label",
+    `Switch SMTP provider from ${providerName(active)} to ${providerName(next)}`
+  );
+}
+
+function setSmtpProvider(provider) {
+  state.smtpProvider = provider;
+  $("global-smtp-provider").value = provider;
+  document.querySelectorAll("#pitch-smtp-provider").forEach((select) => {
+    select.value = provider;
+  });
+  document.querySelectorAll("#pitch-smtp-user, #pitch-smtp-password").forEach((input) => {
+    input.value = "";
+  });
+  updateSmtpToggle();
+}
+
+async function loadSmtpProvider() {
+  try {
+    const health = await api("/api/health");
+    if (SMTP_PROVIDER_LABELS[health.smtp_provider]) {
+      state.smtpDefaultProvider = health.smtp_provider;
+    }
+  } catch (error) {
+    /* Keep the shipped default when health is unavailable. */
+  }
+  updateSmtpToggle();
 }
 
 /* ------------------------------------------------------------------ */
@@ -931,6 +987,7 @@ async function sendQuickEmail() {
         context: $("context").value.trim(),
         subject,
         body,
+        smtp_provider: state.smtpProvider || undefined,
       }),
     });
     notify(data.message || "Email sent.");
@@ -949,6 +1006,15 @@ async function sendQuickEmail() {
 function bindEvents() {
   $("tab-pitch-btn").addEventListener("click", () => showTab("pitch"));
   $("tab-standard-btn").addEventListener("click", () => showTab("standard"));
+
+  $("smtp-toggle-button").addEventListener("click", () => {
+    const next = nextSmtpProvider();
+    setSmtpProvider(next);
+    notify(`SMTP provider switched to ${providerName(next)}.`);
+  });
+  $("global-smtp-provider").addEventListener("change", (event) => {
+    setSmtpProvider(event.target.value);
+  });
 
   $("new-contact-button").addEventListener("click", startNewContact);
 
@@ -1051,7 +1117,7 @@ async function init() {
   renderPendingCompanyDocs();
 
   try {
-    await Promise.all([loadCompanies(), loadContacts()]);
+    await Promise.all([loadCompanies(), loadContacts(), loadSmtpProvider()]);
     setStatus(true);
   } catch (error) {
     setStatus(false);

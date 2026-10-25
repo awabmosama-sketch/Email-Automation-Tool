@@ -20,6 +20,19 @@
         </span>
       </a>
       <div class="topbar-actions">
+        <div class="smtp-switch" title="Select SMTP provider">
+          <label class="sr-only" for="global-smtp-provider">SMTP provider</label>
+          <select id="global-smtp-provider" class="select-compact">
+            <option value="">Default (.env)</option>
+            <option value="zoho">Zoho</option>
+            <option value="gmail">Gmail</option>
+            <option value="custom">Custom</option>
+          </select>
+          <button type="button" id="smtp-toggle-button" class="btn btn-ghost btn-sm smtp-toggle" title="Switch SMTP provider">
+            <span id="smtp-toggle-label">Zoho</span>
+            <span class="smtp-toggle-icon" aria-hidden="true">⇄</span>
+          </button>
+        </div>
         <span class="status" title="Connection status">
           <span id="status-dot" class="status-dot"></span>
           <span id="status-text">Connecting…</span>
@@ -202,32 +215,6 @@
               High spam risk. You will be asked to confirm before this can be sent.
             </div>
             <div class="preview-body" id="pitch-preview-body"></div>
-            <section class="form-section">
-              <div class="section-title">
-                <h3>Sending account</h3>
-                <p>Choose which mailbox to send this pitch from.</p>
-              </div>
-              <div class="grid grid-2">
-                <label>SMTP provider
-                  <select id="pitch-smtp-provider">
-                    <option value="">Use default (.env)</option>
-                    <option value="zoho">Zoho</option>
-                    <option value="gmail">Gmail</option>
-                    <option value="custom">Custom</option>
-                  </select>
-                </label>
-                <label>Sender email / SMTP user
-                  <input id="pitch-smtp-user" placeholder="sales@getabdion.com" maxlength="320">
-                </label>
-                <label>App password / SMTP password
-                  <input id="pitch-smtp-password" type="password" placeholder="Leave empty to use default" maxlength="200">
-                </label>
-                <label>From name
-                  <input id="pitch-sender-name" placeholder="Leave empty to use company/default" maxlength="100">
-                </label>
-              </div>
-              <p class="muted small">If left empty, values from .env are used. For Gmail/Zoho use app passwords if 2FA is enabled.</p>
-            </section>
             <div class="preview-foot">
               <span id="pitch-preview-mode" class="mono-label">B2B pitch</span>
               <div class="preview-actions">

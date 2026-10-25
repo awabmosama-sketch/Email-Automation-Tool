@@ -43,24 +43,28 @@ def _get_smtp_settings(provider: str | None = None):
         provider = "custom"
 
     defaults = _SMTP_PROVIDER_DEFAULTS[provider]
-    if provider == "gmail":
-        host = config.SMTP_HOST or defaults[0]
-        port = config.SMTP_PORT or defaults[1]
-        security = config.SMTP_SECURITY or defaults[2]
-        user = config.GMAIL_USER or config.SMTP_USER
-        password = config.GMAIL_APP_PASSWORD or config.SMTP_PASSWORD
-    elif provider == "zoho":
-        host = config.SMTP_HOST or defaults[0]
-        port = config.SMTP_PORT or defaults[1]
-        security = config.SMTP_SECURITY or defaults[2]
-        user = config.SMTP_USER
-        password = config.SMTP_PASSWORD
-    else:
+    matches_env = provider == config.SMTP_PROVIDER
+
+    if provider == "custom":
         host = config.SMTP_HOST
         port = config.SMTP_PORT
         security = config.SMTP_SECURITY
         user = config.SMTP_USER
         password = config.SMTP_PASSWORD
+    elif provider == "gmail":
+        # .env overrides only apply to the provider they were configured for;
+        # switching providers at runtime must use that provider's own host.
+        host = (config.SMTP_HOST or defaults[0]) if matches_env else defaults[0]
+        port = (config.SMTP_PORT or defaults[1]) if matches_env else defaults[1]
+        security = (config.SMTP_SECURITY or defaults[2]) if matches_env else defaults[2]
+        user = config.GMAIL_USER or (config.SMTP_USER if matches_env else "")
+        password = config.GMAIL_APP_PASSWORD or (config.SMTP_PASSWORD if matches_env else "")
+    else:
+        host = (config.SMTP_HOST or defaults[0]) if matches_env else defaults[0]
+        port = (config.SMTP_PORT or defaults[1]) if matches_env else defaults[1]
+        security = (config.SMTP_SECURITY or defaults[2]) if matches_env else defaults[2]
+        user = config.SMTP_USER if matches_env else ""
+        password = config.SMTP_PASSWORD if matches_env else ""
 
     if security not in {"ssl", "starttls"}:
         security = defaults[2]
@@ -109,9 +113,14 @@ def send_email(
         settings["password"] = smtp_password.strip()
 
     if not settings["user"] or not settings["password"] or not settings["host"]:
+        credentials = (
+            "GMAIL_USER and GMAIL_APP_PASSWORD"
+            if settings["provider"] == "gmail"
+            else "SMTP_USER and SMTP_PASSWORD"
+        )
         return False, (
-            "Email sending is not configured. Set SMTP_USER and SMTP_PASSWORD in .env "
-            f"for SMTP_PROVIDER={settings['provider']}."
+            f"Email sending is not configured for {settings['provider']}. "
+            f"Set {credentials} in .env."
         )
 
     from_name = sender_name or config.SENDER_NAME
