@@ -86,7 +86,12 @@ async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
         "Unhandled error %s on %s %s", error_id, request.method, request.url.path
     )
     response = JSONResponse(
-        {"detail": f"Internal server error ({type(exc).__name__}). Reference: {error_id}."},
+        {
+            "detail": (
+                f"Internal server error ({type(exc).__name__}) on "
+                f"{request.method} {request.url.path}. Reference: {error_id}."
+            )
+        },
         status_code=500,
     )
     if _is_https(request):
@@ -1096,7 +1101,7 @@ def send_pitch(request: PitchSendRequest, http_request: Request) -> dict[str, An
         )
 
     sender_name = request.sender_name.strip() if request.sender_name and request.sender_name.strip() else (company_name or config.SENDER_NAME)
-    unsubscribe_url = build_unsubscribe_url(recipient_email, _public_base_url(request))
+    unsubscribe_url = build_unsubscribe_url(recipient_email, _public_base_url(http_request))
     html = wrap_in_html(body, sender_name, unsubscribe_url=unsubscribe_url or None)
     success, send_error = send_email(
         recipient_email,
