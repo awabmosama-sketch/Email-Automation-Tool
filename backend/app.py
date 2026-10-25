@@ -4,6 +4,7 @@ import hashlib
 import hmac
 from html import escape as html_escape
 import json
+import logging
 import re
 import secrets
 import time
@@ -72,8 +73,25 @@ CONTACTS_FIELDNAMES = [
     "details",
 ]
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Email Automation API", version="1.0.0")
 app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
+    error_id = secrets.token_hex(4)
+    logger.exception(
+        "Unhandled error %s on %s %s", error_id, request.method, request.url.path
+    )
+    response = JSONResponse(
+        {"detail": f"Internal server error ({type(exc).__name__}). Reference: {error_id}."},
+        status_code=500,
+    )
+    if _is_https(request):
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 def _session_key() -> bytes:
@@ -529,7 +547,16 @@ def unsubscribe_page(token: str = "") -> HTMLResponse:
             "This link is invalid. Reply to the email and ask to be removed instead.",
             status_code=400,
         )
-    if suppressions.is_suppressed(email):
+    try:
+        already_unsubscribed = suppressions.is_suppressed(email)
+    except Exception:
+        logger.exception("Unsubscribe lookup failed for %s", email)
+        return _unsubscribe_page(
+            "Temporarily unavailable",
+            "We could not process this request right now. Please try again shortly.",
+            status_code=503,
+        )
+    if already_unsubscribed:
         return _unsubscribe_page(
             "Already unsubscribed",
             "This address is already on the do-not-email list.",
@@ -555,7 +582,15 @@ async def unsubscribe_submit(request: Request, token: str = "") -> HTMLResponse:
             "This link is invalid. Reply to the email and ask to be removed instead.",
             status_code=400,
         )
-    suppressions.add(email)
+    try:
+        suppressions.add(email)
+    except Exception:
+        logger.exception("Unsubscribe write failed for %s", email)
+        return _unsubscribe_page(
+            "Temporarily unavailable",
+            "We could not process this request right now. Please try again shortly.",
+            status_code=503,
+        )
     return _unsubscribe_page(
         "You're unsubscribed",
         "You will not receive further emails from us.",
@@ -644,7 +679,11 @@ def deliverability(request: Request, provider: str = "", refresh: bool = False) 
                 "Add SMTP_USER (or GMAIL_USER for Gmail) first."
             ),
         )
-    return check_domain(domain, requested or None, refresh=refresh)
+    try:
+        return check_domain(domain, requested or None, refresh=refresh)
+    except Exception as error:
+        logger.exception("Deliverability check failed for %s", domain)
+        raise HTTPException(status_code=502, detail=f"DNS check failed: {error}") from error
 
 
 @app.get("/companies")
@@ -838,6 +877,25 @@ def sent_today_count() -> int:
         )
 
 
+def reject_suppressed(email: str) -> None:
+    try:
+        suppressed = suppressions.is_suppressed(email)
+    except Exception as error:
+        logger.exception("Suppression lookup failed for %s", email)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not check the suppression list. Please try again.",
+        ) from error
+    if suppressed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{email} has unsubscribed from your emails. "
+                "Remove the address from the suppression list before sending."
+            ),
+        )
+
+
 def enforce_daily_limit() -> None:
     sent_today = sent_today_count()
     if sent_today >= config.DAILY_LIMIT:
@@ -879,14 +937,7 @@ def send_contact(message: SendRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Please provide a valid email address.")
     if is_blocked_domain(email):
         raise HTTPException(status_code=422, detail="Disposable email domains are not allowed.")
-    if suppressions.is_suppressed(email):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{email} has unsubscribed from your emails. "
-                "Remove the address from the suppression list before sending."
-            ),
-        )
+    reject_suppressed(email)
 
     enforce_daily_limit()
     enforce_spam_threshold(message.body, message.subject)
@@ -1030,14 +1081,7 @@ def send_pitch(request: PitchSendRequest, http_request: Request) -> dict[str, An
             status_code=400,
             detail="Invalid recipient email format or domain is blocked.",
         )
-    if suppressions.is_suppressed(recipient_email):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{recipient_email} has unsubscribed from your emails. "
-                "Remove the address from the suppression list before sending."
-            ),
-        )
+    reject_suppressed(recipient_email)
 
     enforce_daily_limit()
     spam = score_spam(body, subject)

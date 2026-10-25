@@ -141,34 +141,34 @@ def send_email(
             f"Set {credentials} in {location}."
         )
 
-    from_name = sender_name or config.SENDER_NAME
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = formataddr((from_name, settings["user"]))
-    msg["To"] = to_email
-    msg["Reply-To"] = formataddr((from_name, settings["user"]))
-    msg["Date"] = formatdate(localtime=False)
-    sender_domain = settings["user"].rsplit("@", 1)[-1].strip().lower() if "@" in settings["user"] else ""
-    if sender_domain and all(ch.isalnum() or ch in ".-" for ch in sender_domain):
-        msg["Message-ID"] = make_msgid(domain=sender_domain)
-    else:
-        msg["Message-ID"] = make_msgid()
-
-    unsubscribe_targets = []
-    if unsubscribe_url:
-        unsubscribe_targets.append(f"<{unsubscribe_url}>")
-    unsubscribe_targets.append(f"<mailto:{settings['user']}?subject=unsubscribe>")
-    msg["List-Unsubscribe"] = ", ".join(unsubscribe_targets)
-    if unsubscribe_url:
-        msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
-
-    plain_body = text_body or "Please view this message in an HTML-capable email client."
-    if unsubscribe_url:
-        plain_body = plain_body.rstrip() + f"\n\nUnsubscribe: {unsubscribe_url}"
-    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
     try:
+        from_name = sender_name or config.SENDER_NAME
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = formataddr((from_name, settings["user"]))
+        msg["To"] = to_email
+        msg["Reply-To"] = formataddr((from_name, settings["user"]))
+        msg["Date"] = formatdate(localtime=False)
+        sender_domain = settings["user"].rsplit("@", 1)[-1].strip().lower() if "@" in settings["user"] else ""
+        if sender_domain and all(ch.isalnum() or ch in ".-" for ch in sender_domain):
+            msg["Message-ID"] = make_msgid(domain=sender_domain)
+        else:
+            msg["Message-ID"] = make_msgid()
+
+        unsubscribe_targets = []
+        if unsubscribe_url:
+            unsubscribe_targets.append(f"<{unsubscribe_url}>")
+        unsubscribe_targets.append(f"<mailto:{settings['user']}?subject=unsubscribe>")
+        msg["List-Unsubscribe"] = ", ".join(unsubscribe_targets)
+        if unsubscribe_url:
+            msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+
+        plain_body = text_body or "Please view this message in an HTML-capable email client."
+        if unsubscribe_url:
+            plain_body = plain_body.rstrip() + f"\n\nUnsubscribe: {unsubscribe_url}"
+        msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+
         with _smtp_connection(settings) as server:
             server.login(settings["user"], settings["password"])
             server.sendmail(settings["user"], to_email, msg.as_string())

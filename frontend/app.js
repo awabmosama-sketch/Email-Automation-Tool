@@ -73,7 +73,9 @@ async function api(path, options = {}) {
   }
 
   if (!response.ok) {
-    const message = data.detail || data.message || `Request failed (${response.status}).`;
+    const requestLabel = `${(config.method || "GET").toUpperCase()} ${path.split("?")[0]}`;
+    const message =
+      data.detail || data.message || `Request failed (${response.status}) for ${requestLabel}.`;
     const requestError = new Error(message);
     requestError.status = response.status;
     requestError.data = data;
