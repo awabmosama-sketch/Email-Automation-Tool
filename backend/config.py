@@ -32,10 +32,15 @@ _DEFAULT_SMTP_HOST, _DEFAULT_SMTP_PORT, _DEFAULT_SMTP_SECURITY = _SMTP_PROVIDER_
 # Backwards compatibility: the old Gmail-only variables keep working.
 _legacy_gmail = SMTP_PROVIDER == "gmail"
 
-SMTP_USER = os.getenv("SMTP_USER", "").strip() or (
+# Raw values without the legacy Gmail fallback, so selecting Zoho can never
+# pick up Gmail credentials by mistake.
+SMTP_USER_ENV = os.getenv("SMTP_USER", "").strip()
+SMTP_PASSWORD_ENV = os.getenv("SMTP_PASSWORD", "").strip()
+
+SMTP_USER = SMTP_USER_ENV or (
     (os.getenv("GMAIL_USER") or "").strip() if _legacy_gmail else ""
 )
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip() or (
+SMTP_PASSWORD = SMTP_PASSWORD_ENV or (
     (os.getenv("GMAIL_APP_PASSWORD") or "").strip() if _legacy_gmail else ""
 )
 

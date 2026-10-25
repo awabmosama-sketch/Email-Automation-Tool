@@ -1,4 +1,5 @@
 import logging
+import os
 import smtplib
 from html import escape
 from email.mime.multipart import MIMEMultipart
@@ -63,8 +64,10 @@ def _get_smtp_settings(provider: str | None = None):
         host = (config.SMTP_HOST or defaults[0]) if matches_env else defaults[0]
         port = (config.SMTP_PORT or defaults[1]) if matches_env else defaults[1]
         security = (config.SMTP_SECURITY or defaults[2]) if matches_env else defaults[2]
-        user = config.SMTP_USER if matches_env else ""
-        password = config.SMTP_PASSWORD if matches_env else ""
+        # SMTP_USER/SMTP_PASSWORD belong to Zoho regardless of which provider
+        # .env declares, so a runtime switch to Zoho still finds credentials.
+        user = config.SMTP_USER_ENV
+        password = config.SMTP_PASSWORD_ENV
 
     if security not in {"ssl", "starttls"}:
         security = defaults[2]
@@ -118,9 +121,14 @@ def send_email(
             if settings["provider"] == "gmail"
             else "SMTP_USER and SMTP_PASSWORD"
         )
+        location = (
+            "the Vercel environment variables (then redeploy)"
+            if os.getenv("VERCEL")
+            else ".env"
+        )
         return False, (
             f"Email sending is not configured for {settings['provider']}. "
-            f"Set {credentials} in .env."
+            f"Set {credentials} in {location}."
         )
 
     from_name = sender_name or config.SENDER_NAME
