@@ -86,8 +86,9 @@ def auth_enabled() -> bool:
         return True
     return bool(APP_EMAIL and APP_PASSWORD)
 
-# Sending limits
-DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "5"))
+# Sending limits. Never drop below 15 sends a day, even if an older .env
+# or deployment still carries the previous 5/day value.
+DAILY_LIMIT = max(15, int(os.getenv("DAILY_LIMIT", "15").strip() or "15"))
 DELAY_BETWEEN_EMAILS = 15  # seconds — warmup ke liye
 
 # SMTP server (resolved above from SMTP_PROVIDER + optional overrides)

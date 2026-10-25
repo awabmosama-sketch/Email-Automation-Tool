@@ -116,7 +116,7 @@ The dashboard can:
 .\venv\Scripts\python.exe -m backend.main
 ```
 
-The dashboard and the batch sender both observe `DAILY_LIMIT` by counting today's successful sends in Neon or `.local-data/sent_log.csv`. The batch sender also validates contacts and checks spam scores.
+The dashboard and the batch sender both observe `DAILY_LIMIT` (default 15, minimum 15) by counting today's successful sends in Neon or `.local-data/sent_log.csv`. The batch sender also validates contacts and checks spam scores.
 
 ## Deliverability Requirements
 
