@@ -114,6 +114,33 @@
                 <textarea id="pitch-details" rows="3" maxlength="1000" placeholder="Pain points, recent news, or anything the email should reference…"></textarea>
               </label>
 
+              <div class="form-section">
+                <div class="section-title">
+                  <h3>Sending account</h3>
+                  <p>Choose which mailbox to send from (overrides .env for this send).</p>
+                </div>
+                <div class="grid grid-2">
+                  <label>SMTP provider
+                    <select id="pitch-smtp-provider">
+                      <option value="">Use default (.env)</option>
+                      <option value="zoho">Zoho</option>
+                      <option value="gmail">Gmail</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                  </label>
+                  <label>Sender email / SMTP user
+                    <input id="pitch-smtp-user" placeholder="sales@getabdion.com" maxlength="320">
+                  </label>
+                  <label>App password / SMTP password
+                    <input id="pitch-smtp-password" type="password" placeholder="Leave empty to use default" maxlength="200">
+                  </label>
+                  <label>From name
+                    <input id="pitch-sender-name" placeholder="Leave empty to use company/default" maxlength="100">
+                  </label>
+                </div>
+                <p class="muted small">Defaults come from your .env. Use app passwords if 2FA is enabled.</p>
+              </div>
+
               <div class="docs-block">
                 <div class="section-title">
                   <h3>Reference documents</h3>
