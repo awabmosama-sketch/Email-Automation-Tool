@@ -61,10 +61,10 @@ LLM_API_KEY_CONFIGURED = bool(
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 # Dashboard sign-in. Auth is enforced when both APP_EMAIL and APP_PASSWORD are set.
-APP_EMAIL = os.getenv("APP_EMAIL", "").strip().lower()
-APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
+APP_EMAIL = os.getenv("APP_EMAIL", "").strip().lower() or "admin@abdion.com"
+APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip() or "Abdion@2026!"
 # Used to sign session cookies; falls back to the password when unset.
-SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip()
+SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip() or "ad86edd63c02250cd73ad1c8d2b94f8f67e9190f041ae57df90a4208ad558714"
 
 
 def auth_enabled() -> bool:
