@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS documents_owner_idx
     ON documents (owner_type, owner_key);
+
+CREATE TABLE IF NOT EXISTS suppressions (
+    email TEXT PRIMARY KEY,
+    reason TEXT NOT NULL DEFAULT 'unsubscribe',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 _pool: ConnectionPool | None = None
@@ -225,6 +231,27 @@ def log_send(email: str, status: str, subject: str) -> None:
         connection.execute(
             "INSERT INTO sent_log (email, status, subject) VALUES (%s, %s, %s)",
             (email, status, subject),
+        )
+
+
+def is_suppressed(email: str) -> bool:
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT 1 FROM suppressions WHERE email = %s",
+            (email.strip().lower(),),
+        ).fetchone()
+    return row is not None
+
+
+def add_suppression(email: str, reason: str = "unsubscribe") -> None:
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO suppressions (email, reason)
+            VALUES (%s, %s)
+            ON CONFLICT (email) DO NOTHING
+            """,
+            (email.strip().lower(), reason),
         )
 
 

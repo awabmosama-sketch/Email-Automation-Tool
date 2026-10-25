@@ -158,6 +158,70 @@ async function loadSmtpProvider() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Deliverability                                                      */
+/* ------------------------------------------------------------------ */
+
+const DNS_CHECK_LABELS = { spf: "SPF", dkim: "DKIM", dmarc: "DMARC" };
+const DNS_STATUS_LABELS = { pass: "Pass", missing: "Missing", error: "Lookup failed" };
+
+function renderDeliverability(data) {
+  const domain = data.domain || "";
+  $("deliverability-subtitle").textContent = domain
+    ? `${domain} · ${providerName(data.provider)} sending`
+    : "SPF, DKIM, and DMARC for the active sending domain.";
+
+  $("deliverability-results").innerHTML = ["spf", "dkim", "dmarc"]
+    .map((key) => {
+      const check = data[key] || {};
+      const status = DNS_STATUS_LABELS[check.status] ? check.status : "error";
+      const record = check.record
+        ? `<code class="dns-record">${escapeHtml(check.record)}</code>`
+        : "";
+      return `
+        <div class="dns-row ${status}">
+          <div class="dns-row-head">
+            <strong>${DNS_CHECK_LABELS[key]}</strong>
+            <span class="dns-badge ${status}">${DNS_STATUS_LABELS[status]}</span>
+          </div>
+          <p class="dns-detail">${escapeHtml(check.detail || "No detail available.")}</p>
+          ${record}
+        </div>`;
+    })
+    .join("");
+
+  const tips = Array.isArray(data.tips) ? data.tips : [];
+  $("deliverability-tips").innerHTML = tips
+    .map((tip) => `<li>${escapeHtml(tip)}</li>`)
+    .join("");
+}
+
+async function checkDeliverability(forceRefresh = false) {
+  $("deliverability-modal").classList.remove("hidden");
+  $("deliverability-subtitle").textContent = "SPF, DKIM, and DMARC for the active sending domain.";
+  $("deliverability-results").innerHTML = '<p class="muted small">Looking up SPF, DKIM, and DMARC…</p>';
+  $("deliverability-tips").innerHTML = "";
+
+  const button = $("refresh-deliverability-btn");
+  button.disabled = true;
+  try {
+    const provider = activeSmtpProvider();
+    const query = `provider=${encodeURIComponent(provider)}${forceRefresh ? "&refresh=1" : ""}`;
+    const data = await api(`/api/deliverability?${query}`);
+    renderDeliverability(data);
+  } catch (error) {
+    $("deliverability-results").innerHTML = `<div class="notice error">${escapeHtml(
+      error.message || "DNS check failed."
+    )}</div>`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function closeDeliverabilityModal() {
+  $("deliverability-modal").classList.add("hidden");
+}
+
+/* ------------------------------------------------------------------ */
 /* Auth                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1016,6 +1080,15 @@ function bindEvents() {
     setSmtpProvider(event.target.value);
   });
 
+  $("topbar-deliverability-button").addEventListener("click", () => checkDeliverability());
+  $("check-deliverability-btn").addEventListener("click", () => checkDeliverability());
+  $("refresh-deliverability-btn").addEventListener("click", () => checkDeliverability(true));
+  $("close-deliverability-modal-btn").addEventListener("click", closeDeliverabilityModal);
+  $("done-deliverability-btn").addEventListener("click", closeDeliverabilityModal);
+  $("deliverability-modal").addEventListener("click", (event) => {
+    if (event.target === $("deliverability-modal")) closeDeliverabilityModal();
+  });
+
   $("new-contact-button").addEventListener("click", startNewContact);
 
   $("contact-search").addEventListener("input", (event) => {
@@ -1089,9 +1162,9 @@ function bindEvents() {
     if (event.target === $("company-modal")) closeCompanyModal();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !$("company-modal").classList.contains("hidden")) {
-      closeCompanyModal();
-    }
+    if (event.key !== "Escape") return;
+    if (!$("company-modal").classList.contains("hidden")) closeCompanyModal();
+    if (!$("deliverability-modal").classList.contains("hidden")) closeDeliverabilityModal();
   });
 
   $("logout-button").addEventListener("click", async () => {

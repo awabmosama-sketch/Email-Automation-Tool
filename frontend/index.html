@@ -33,6 +33,7 @@
             <span class="smtp-toggle-icon" aria-hidden="true">⇄</span>
           </button>
         </div>
+        <button type="button" id="topbar-deliverability-button" class="btn btn-ghost btn-sm smtp-toggle" title="Check SPF, DKIM, and DMARC for the sending domain" aria-label="Check DNS authentication">DNS</button>
         <span class="status" title="Connection status">
           <span id="status-dot" class="status-dot"></span>
           <span id="status-text">Connecting…</span>
@@ -151,7 +152,10 @@
                     <input id="pitch-sender-name" placeholder="Leave empty to use company/default" maxlength="100">
                   </label>
                 </div>
-                <p class="muted small">Defaults come from your .env. Use app passwords if 2FA is enabled.</p>
+                <div class="smtp-health">
+                  <p class="muted small">Defaults come from your .env. Use app passwords if 2FA is enabled.</p>
+                  <button type="button" id="check-deliverability-btn" class="btn btn-ghost btn-sm">Check DNS authentication</button>
+                </div>
               </div>
 
               <div class="docs-block">
@@ -333,6 +337,30 @@
           <button type="submit" id="save-company-btn" class="btn btn-primary">Save company</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- DELIVERABILITY MODAL -->
+  <div id="deliverability-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="deliverability-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h3 id="deliverability-modal-title">DNS authentication</h3>
+          <p class="muted small" id="deliverability-subtitle">SPF, DKIM, and DMARC for the active sending domain.</p>
+        </div>
+        <button type="button" id="close-deliverability-modal-btn" class="close-btn" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="deliverability-results" class="deliverability-results">
+          <p class="muted small">Loading DNS records…</p>
+        </div>
+        <ul id="deliverability-tips" class="deliverability-tips"></ul>
+        <p class="muted small">DNS changes can take up to 48 hours to propagate. Mailbox providers also weigh engagement and content, not authentication alone.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="refresh-deliverability-btn" class="btn btn-ghost">Re-check</button>
+        <button type="button" id="done-deliverability-btn" class="btn btn-primary">Done</button>
+      </div>
     </div>
   </div>
 

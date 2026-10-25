@@ -96,6 +96,8 @@ body::before {
 .smtp-switch .select-compact { width: auto; padding: 7px 9px; border-radius: 8px; background: #fff; font-size: 11.5px; }
 .smtp-toggle { gap: 6px; font: 600 10.5px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
 .smtp-toggle-icon { color: var(--green); font-size: 13px; line-height: 1; }
+.smtp-health { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.smtp-health p { margin: 0; }
 .status { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font: 500 10px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--coral); box-shadow: 0 0 0 3px rgba(227, 110, 77, 0.15); }
 .status-dot.ready { background: var(--green); box-shadow: 0 0 0 3px rgba(21, 107, 80, 0.15); }
@@ -493,6 +495,22 @@ input:focus, textarea:focus, select:focus {
 }
 .mono-label { color: var(--muted); font: 500 9.5px var(--mono); letter-spacing: 0.09em; text-transform: uppercase; }
 .preview-actions { display: flex; align-items: center; gap: 14px; }
+
+/* ---------- Deliverability ---------- */
+.deliverability-results { display: grid; gap: 10px; }
+.dns-row { padding: 13px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcf7; }
+.dns-row.missing { border-color: #fde68a; background: #fffdf5; }
+.dns-row.error { border-color: #fca5a5; background: var(--red-soft); }
+.dns-row-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dns-row-head strong { font: 600 12px var(--mono); letter-spacing: 0.08em; }
+.dns-badge { padding: 4px 9px; border-radius: 999px; border: 1px solid transparent; font: 600 9.5px var(--mono); letter-spacing: 0.05em; text-transform: uppercase; }
+.dns-badge.pass { background: var(--green-soft); border-color: #bfe3d1; color: var(--green); }
+.dns-badge.missing { background: var(--amber-soft); border-color: #fde68a; color: var(--amber); }
+.dns-badge.error { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+.dns-detail { margin: 7px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.dns-record { display: block; margin-top: 8px; padding: 8px 10px; border-radius: 7px; background: var(--paper); color: var(--ink); font: 11px var(--mono); overflow-wrap: anywhere; }
+.deliverability-tips { margin: 0; padding-left: 18px; display: grid; gap: 7px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.deliverability-tips:empty { display: none; }
 
 /* ---------- Modal ---------- */
 .modal-backdrop {

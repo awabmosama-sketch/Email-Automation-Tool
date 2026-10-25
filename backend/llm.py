@@ -143,12 +143,15 @@ Return ONLY valid JSON, no other text, in exactly this format:
     return {"subject": subject, "body": body}
 
 
-def check_spam_score(email_text):
+def check_spam_score(email_text, subject=""):
     """LLM se spam score check karta hai (0-10)."""
+    subject_block = f"Subject: {subject}\n\n" if subject else ""
     prompt = f"""Analyze this email for spam trigger words and deliverability issues.
 
-Email:
+{subject_block}Body:
 {email_text}
+
+Judge the subject line and body together, since subject lines are a major spam filter signal.
 
 Return ONLY valid JSON in exactly this format:
 {{"score": <integer 0-10>, "issues": "comma-separated issues or none"}}
@@ -300,7 +303,7 @@ Return ONLY a valid JSON object in exactly this format:
     subject = _enforce_company_name_spelling(subject, company_name)
     body = _enforce_company_name_spelling(body, company_name)
 
-    spam_result = check_spam_score(body)
+    spam_result = check_spam_score(body, subject)
     spam_score = spam_result.get("score", 0)
 
     return {
@@ -323,6 +326,6 @@ if __name__ == "__main__":
     print("\nBODY:\n", result["body"])
 
     print("\nChecking spam score...")
-    spam = check_spam_score(result["body"])
+    spam = check_spam_score(result["body"], result["subject"])
     print(f"Score: {spam['score']}/10")
     print(f"Issues: {spam['issues']}")

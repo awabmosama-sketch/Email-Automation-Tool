@@ -5,6 +5,8 @@ from datetime import datetime
 from . import config, database
 from .llm import check_spam_score, generate_email
 from .sender import send_email, wrap_in_html
+from .suppressions import is_suppressed
+from .unsubscribe import build_unsubscribe_url
 from .verifier import verify
 
 
@@ -47,7 +49,10 @@ def main() -> None:
     print("\nLoaded " + str(len(contacts)) + " contacts")
     print("Storage: " + ("Neon PostgreSQL" if database.is_configured() else str(config.CONTACTS_FILE)))
     print("Daily limit: " + str(config.DAILY_LIMIT))
-    print("Delay: " + str(config.DELAY_BETWEEN_EMAILS) + "s\n")
+    print("Delay: " + str(config.DELAY_BETWEEN_EMAILS) + "s")
+    if not config.APP_BASE_URL:
+        print("APP_BASE_URL is not set: emails will not include an unsubscribe link.")
+    print()
 
     sent = 0
     skipped = 0
@@ -72,12 +77,18 @@ def main() -> None:
             skipped += 1
             continue
 
+        if is_suppressed(email):
+            print("[" + str(i) + "] SKIP " + email + " -> unsubscribed")
+            log_send(email, "suppressed")
+            skipped += 1
+            continue
+
         print("[" + str(i) + "] Generating email for " + name + "...")
         result = generate_email(name, email, context)
         subject = result["subject"]
         body = result["body"]
 
-        spam = check_spam_score(body)
+        spam = check_spam_score(body, subject)
         print("    spam score: " + str(spam["score"]) + "/10 - " + spam["issues"])
 
         if spam["score"] >= 7:
@@ -86,8 +97,9 @@ def main() -> None:
             skipped += 1
             continue
 
-        html = wrap_in_html(body, config.SENDER_NAME)
-        success, send_error = send_email(email, subject, html, body)
+        unsubscribe_url = build_unsubscribe_url(email)
+        html = wrap_in_html(body, config.SENDER_NAME, unsubscribe_url=unsubscribe_url or None)
+        success, send_error = send_email(email, subject, html, body, unsubscribe_url=unsubscribe_url or None)
 
         if success:
             print("    SENT -> " + email)

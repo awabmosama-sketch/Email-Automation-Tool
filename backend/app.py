@@ -2,7 +2,9 @@ import base64
 import csv
 import hashlib
 import hmac
+from html import escape as html_escape
 import json
+import re
 import secrets
 import time
 from datetime import datetime
@@ -11,7 +13,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from psycopg.errors import UniqueViolation
@@ -20,13 +22,16 @@ from starlette.concurrency import run_in_threadpool
 from . import config
 from . import database
 from . import documents as document_store
+from . import suppressions
+from .deliverability import check_domain
+from .unsubscribe import build_unsubscribe_url, verify_token
 from .companies import (
     add_or_update_company_profile,
     load_company_profiles,
     save_all_company_profiles,
 )
 from .documents import DocumentError
-from .sender import send_email, wrap_in_html
+from .sender import send_email, sending_domain, wrap_in_html
 from .verifier import is_blocked_domain, is_valid_format, verify
 
 
@@ -40,7 +45,7 @@ SESSION_COOKIE = "ea_session"
 SESSION_MAX_AGE = 7 * 24 * 60 * 60  # 7 days
 LOGIN_MAX_ATTEMPTS = 10
 LOGIN_WINDOW_SECONDS = 5 * 60
-PUBLIC_PATHS = {"/login", "/api/auth/login", "/api/auth/me", "/api/auth/logout"}
+PUBLIC_PATHS = {"/login", "/unsubscribe", "/api/auth/login", "/api/auth/me", "/api/auth/logout"}
 PUBLIC_ASSETS = {"/frontend/login.css", "/frontend/login.js", "/favicon.ico"}
 
 _login_attempts: dict[str, list[float]] = {}
@@ -110,6 +115,19 @@ def _session_email(request: Request) -> str | None:
 def _is_https(request: Request) -> bool:
     forwarded = request.headers.get("x-forwarded-proto", "").lower()
     return request.url.scheme == "https" or forwarded == "https"
+
+
+_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.\-:\[\]]+$")
+
+
+def _public_base_url(request: Request) -> str:
+    if config.APP_BASE_URL:
+        return config.APP_BASE_URL
+    host = (request.headers.get("host") or request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").split(",")[0].strip().lower()
+    if not host or not _HOST_PATTERN.fullmatch(host) or proto not in {"http", "https"}:
+        return ""
+    return f"{proto}://{host}"
 
 
 def _safe_equal(left: str, right: str) -> bool:
@@ -207,7 +225,9 @@ async def security_headers(request: Request, call_next):
         if int(content_length) > allowed:
             return JSONResponse({"detail": "Request is too large."}, status_code=413)
 
-    if request.method in UNSAFE_METHODS:
+    # /unsubscribe accepts RFC 8058 one-click POSTs from mail clients, which are
+    # cross-origin by nature; the signed token in the URL is the capability.
+    if request.method in UNSAFE_METHODS and path.rstrip("/") != "/unsubscribe":
         if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
             return JSONResponse({"detail": "Cross-origin request blocked."}, status_code=403)
         origin = request.headers.get("origin")
@@ -226,7 +246,7 @@ async def security_headers(request: Request, call_next):
         headers.setdefault("Content-Security-Policy", SECURITY_CSP)
     if _is_https(request):
         headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    if path.startswith("/api/") or path.startswith("/pitch/") or path in {"/login", "/"}:
+    if path.startswith("/api/") or path.startswith("/pitch/") or path in {"/login", "/", "/unsubscribe"}:
         headers.setdefault("Cache-Control", "no-store")
 
     return response
@@ -461,6 +481,88 @@ def login_page(request: Request):
     return FileResponse(LOGIN_FILE)
 
 
+def _unsubscribe_page(
+    title: str,
+    message: str,
+    *,
+    email: str = "",
+    token: str = "",
+    status_code: int = 200,
+) -> HTMLResponse:
+    email_block = f"<p class='email'>{html_escape(email)}</p>" if email else ""
+    form = ""
+    if token:
+        form = (
+            "<form method='post' action='/unsubscribe'>"
+            f"<input type='hidden' name='token' value='{html_escape(token)}'>"
+            "<button type='submit'>Unsubscribe</button>"
+            "</form>"
+        )
+    page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>{html_escape(title)} · Email Automation</title>
+  <link rel="stylesheet" href="/frontend/unsubscribe.css">
+</head>
+<body>
+  <main class="card">
+    <span class="brand-mark">EA</span>
+    <h1>{html_escape(title)}</h1>
+    <p>{html_escape(message)}</p>
+    {email_block}
+    {form}
+  </main>
+</body>
+</html>"""
+    return HTMLResponse(page, status_code=status_code)
+
+
+@app.get("/unsubscribe", include_in_schema=False)
+def unsubscribe_page(token: str = "") -> HTMLResponse:
+    email = verify_token(token)
+    if not email:
+        return _unsubscribe_page(
+            "Invalid unsubscribe link",
+            "This link is invalid. Reply to the email and ask to be removed instead.",
+            status_code=400,
+        )
+    if suppressions.is_suppressed(email):
+        return _unsubscribe_page(
+            "Already unsubscribed",
+            "This address is already on the do-not-email list.",
+            email=email,
+        )
+    return _unsubscribe_page(
+        "Unsubscribe",
+        "Stop future emails to this address?",
+        email=email,
+        token=token,
+    )
+
+
+@app.post("/unsubscribe", include_in_schema=False)
+async def unsubscribe_submit(request: Request, token: str = "") -> HTMLResponse:
+    if not token:
+        form = await request.form()
+        token = str(form.get("token") or "")
+    email = verify_token(token)
+    if not email:
+        return _unsubscribe_page(
+            "Invalid unsubscribe link",
+            "This link is invalid. Reply to the email and ask to be removed instead.",
+            status_code=400,
+        )
+    suppressions.add(email)
+    return _unsubscribe_page(
+        "You're unsubscribed",
+        "You will not receive further emails from us.",
+        email=email,
+    )
+
+
 @app.get("/api/auth/me")
 def auth_me(request: Request) -> dict[str, Any]:
     email = _session_email(request)
@@ -520,8 +622,29 @@ def health() -> dict[str, Any]:
         "llm_configured": config.LLM_API_KEY_CONFIGURED,
         "smtp_configured": config.smtp_configured(),
         "smtp_provider": config.SMTP_PROVIDER,
+        "sender_domain": sending_domain(),
+        "app_base_url_configured": bool(config.APP_BASE_URL),
         "auth_enabled": config.auth_enabled(),
     }
+
+
+@app.get("/api/deliverability")
+def deliverability(request: Request, provider: str = "", refresh: bool = False) -> dict[str, Any]:
+    enforce_rate_limit(request, "deliverability:check", limit=12, window_seconds=60)
+    requested = provider.strip().lower()
+    if requested and requested not in {"zoho", "gmail", "custom"}:
+        raise HTTPException(status_code=400, detail="Unknown SMTP provider.")
+
+    domain = sending_domain(requested or None)
+    if not domain:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No sending address is configured for this provider. "
+                "Add SMTP_USER (or GMAIL_USER for Gmail) first."
+            ),
+        )
+    return check_domain(domain, requested or None, refresh=refresh)
 
 
 @app.get("/companies")
@@ -727,20 +850,20 @@ def enforce_daily_limit() -> None:
         )
 
 
-def score_spam(body: str) -> dict[str, Any]:
+def score_spam(body: str, subject: str = "") -> dict[str, Any]:
     try:
         from .llm import check_spam_score
     except ValueError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
     try:
-        return check_spam_score(body)
+        return check_spam_score(body, subject)
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"Spam check failed: {error}") from error
 
 
-def enforce_spam_threshold(body: str) -> None:
-    spam = score_spam(body)
+def enforce_spam_threshold(body: str, subject: str = "") -> None:
+    spam = score_spam(body, subject)
     if spam["score"] >= 7:
         raise HTTPException(
             status_code=422,
@@ -756,16 +879,26 @@ def send_contact(message: SendRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Please provide a valid email address.")
     if is_blocked_domain(email):
         raise HTTPException(status_code=422, detail="Disposable email domains are not allowed.")
+    if suppressions.is_suppressed(email):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{email} has unsubscribed from your emails. "
+                "Remove the address from the suppression list before sending."
+            ),
+        )
 
     enforce_daily_limit()
-    enforce_spam_threshold(message.body)
-    html = wrap_in_html(message.body, config.SENDER_NAME)
+    enforce_spam_threshold(message.body, message.subject)
+    unsubscribe_url = build_unsubscribe_url(email, _public_base_url(request))
+    html = wrap_in_html(message.body, config.SENDER_NAME, unsubscribe_url=unsubscribe_url or None)
     success, send_error = send_email(
         email,
         message.subject.strip(),
         html,
         message.body,
         smtp_provider=message.smtp_provider,
+        unsubscribe_url=unsubscribe_url or None,
     )
     log_send(email, "sent" if success else "failed", message.subject.strip())
     if not success:
@@ -897,9 +1030,17 @@ def send_pitch(request: PitchSendRequest, http_request: Request) -> dict[str, An
             status_code=400,
             detail="Invalid recipient email format or domain is blocked.",
         )
+    if suppressions.is_suppressed(recipient_email):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{recipient_email} has unsubscribed from your emails. "
+                "Remove the address from the suppression list before sending."
+            ),
+        )
 
     enforce_daily_limit()
-    spam = score_spam(body)
+    spam = score_spam(body, subject)
     server_score = int(spam.get("score", 0) or 0)
     if server_score >= 7 and not request.confirm_high_spam:
         raise HTTPException(
@@ -911,7 +1052,8 @@ def send_pitch(request: PitchSendRequest, http_request: Request) -> dict[str, An
         )
 
     sender_name = request.sender_name.strip() if request.sender_name and request.sender_name.strip() else (company_name or config.SENDER_NAME)
-    html = wrap_in_html(body, sender_name)
+    unsubscribe_url = build_unsubscribe_url(recipient_email, _public_base_url(request))
+    html = wrap_in_html(body, sender_name, unsubscribe_url=unsubscribe_url or None)
     success, send_error = send_email(
         recipient_email,
         subject,
@@ -921,6 +1063,7 @@ def send_pitch(request: PitchSendRequest, http_request: Request) -> dict[str, An
         smtp_user=request.smtp_user,
         smtp_password=request.smtp_password,
         sender_name=sender_name,
+        unsubscribe_url=unsubscribe_url or None,
     )
     log_send(recipient_email, "pitch:sent" if success else "pitch:failed", subject)
 

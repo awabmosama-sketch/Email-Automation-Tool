@@ -59,6 +59,11 @@ except ValueError:
     SMTP_PORT = _DEFAULT_SMTP_PORT
 
 SENDER_NAME = os.getenv("SENDER_NAME", "Team")
+# Public origin used for unsubscribe links in outgoing email. Derived from the
+# request when unset; set it on serverless deployments if links look wrong.
+APP_BASE_URL = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
+# Selector shown in the mail provider's DKIM settings (e.g. "zoho").
+DKIM_SELECTOR = os.getenv("DKIM_SELECTOR", "").strip().lower()
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").strip().lower()
 LLM_API_KEY_CONFIGURED = bool(
     os.getenv("ANTHROPIC_API_KEY") if LLM_PROVIDER == "anthropic" else os.getenv("GROQ_API_KEY")
@@ -100,6 +105,7 @@ CONTACTS_FILE = Path(os.getenv("CONTACTS_FILE", DATA_DIR / "contacts.csv"))
 LOG_FILE = Path(os.getenv("LOG_FILE", DATA_DIR / "sent_log.csv"))
 COMPANIES_FILE = Path(os.getenv("COMPANIES_FILE", DATA_DIR / "companies.json"))
 DOCUMENTS_FILE = Path(os.getenv("DOCUMENTS_FILE", DATA_DIR / "documents.json"))
+SUPPRESSIONS_FILE = Path(os.getenv("SUPPRESSIONS_FILE", DATA_DIR / "suppressions.csv"))
 
 
 def validate_config():

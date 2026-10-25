@@ -11,10 +11,13 @@ email-automation/
 │   ├── companies.py    # Pitching company profiles, services, and brand tones
 │   ├── config.py       # Environment and file configuration
 │   ├── database.py     # Neon PostgreSQL persistence
+│   ├── deliverability.py # SPF/DKIM/DMARC DNS checks
 │   ├── migrate_to_neon.py # One-time local data migration
 │   ├── llm.py          # Groq email & pitch generation, spam scoring
 │   ├── main.py         # Command-line batch sender (Neon-aware)
 │   ├── sender.py       # SMTP delivery (Gmail, Zoho, or custom)
+│   ├── suppressions.py # Unsubscribe suppression list
+│   ├── unsubscribe.py  # Signed unsubscribe links
 │   └── verifier.py     # Email format, domain, and MX checks
 ├── frontend/           # Dashboard + sign-in page (Pitch Generator & Preview)
 ├── .local-data/        # Local CSV/JSON fallback when DATABASE_URL is unset
@@ -68,7 +71,8 @@ Notes:
 - Zoho has regional data centres. If your account is not on the global domain, uncomment and set `SMTP_HOST` to `smtp.zoho.in`, `smtp.zoho.eu`, `smtp.zoho.com.au`, or `smtp.zoho.jp`.
 - Port `587` with STARTTLS is also supported: set `SMTP_PORT=587` and `SMTP_SECURITY=starttls`.
 - Legacy `GMAIL_USER` / `GMAIL_APP_PASSWORD` still work, but only when `SMTP_PROVIDER=gmail`.
-- `/api/health` reports `smtp_configured` and the active `smtp_provider`.
+- `/api/health` reports `smtp_configured`, the active `smtp_provider`, and the `sender_domain`.
+- The dashboard topbar has a provider toggle that switches between Zoho and Gmail for the current session without editing `.env`. The pitch form can also override the SMTP user, app password, and From name per send.
 
 Sign-in is enabled when both `APP_EMAIL` and `APP_PASSWORD` are set. Visitors then get a dedicated login page, and the dashboard/API require a signed session cookie (valid for 7 days). Set `SESSION_SECRET` to keep sessions valid across restarts. With either value unset, authentication is disabled, which is only appropriate for local development.
 
@@ -116,7 +120,15 @@ The dashboard and the batch sender both observe `DAILY_LIMIT` by counting today'
 
 ## Deliverability Requirements
 
-No application can guarantee that every receiving provider will place a message in the inbox. The code now sends a standards-compliant multipart message, includes normal `Date` and `Message-ID` headers, provides a `List-Unsubscribe` mailto header, escapes HTML, and blocks messages with a spam score of 7 or higher.
+No application can guarantee that every receiving provider will place a message in the inbox, but the app now does the application-side work:
+
+- Standards-compliant multipart (`text/plain` + `text/html`) messages with `Date`, `Message-ID` on the sender's domain, and `Reply-To`.
+- One-click unsubscribe: `List-Unsubscribe` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` headers plus a visible footer link, all pointing at signed `/unsubscribe` links.
+- A suppression list. Unsubscribed addresses are stored in Neon (`suppressions` table) or `.local-data/suppressions.csv` and rejected by the dashboard, the pitch endpoint, and the batch sender.
+- Subject lines are included in the AI spam score, not just the body.
+- A **DNS authentication** check in the dashboard (topbar **DNS** button or **Check DNS authentication** in the pitch form) that validates SPF, DKIM, and DMARC for the active sending domain via `/api/deliverability`.
+
+Set `APP_BASE_URL` to the public URL of the deployment so unsubscribe links work from production email. If it is unset, the app falls back to the request host; emails only get a mailto unsubscribe fallback.
 
 For reliable delivery, configure the sending domain as well:
 
@@ -124,10 +136,12 @@ For reliable delivery, configure the sending domain as well:
 2. Publish SPF for the service that sends mail. For Zoho, this is normally `include:zoho.com` (or the regional variant shown in Zoho's admin panel); for Google Workspace it normally includes `include:_spf.google.com`.
 3. Enable DKIM signing in Zoho Mail Admin or Google Workspace and publish the DKIM DNS record it provides.
 4. Publish a DMARC record for the sender domain, starting with a monitoring policy such as `p=none` while verifying reports.
-5. Keep the `From` domain aligned with SPF/DKIM, send only to opted-in recipients, remove bounces, and ramp volume gradually.
-6. Test with Gmail's **Show original** and a mail-tester service to confirm SPF, DKIM, and DMARC pass.
+5. Keep the `From` domain aligned with SPF/DKIM, send only to opted-in recipients, remove bounces, and ramp volume gradually. Cold outreach is safer from a dedicated, warmed subdomain.
+6. Test with Gmail's **Show original** and a mail-tester service to confirm SPF, DKIM, and DMARC pass. Gmail's Promotions tab is also influenced by content and engagement, so keep first emails short and personal.
 
 The SMTP credentials authenticate delivery, but they cannot override a receiver's spam policy or a domain's missing DNS authentication.
+
+To manually clear an address from the suppression list, delete its row from the `suppressions` table in Neon or from `.local-data/suppressions.csv`.
 
 ## Company-Service Pitching Email Generator
 
@@ -163,7 +177,7 @@ Keep `.env`, `venv/`, `.local-data/`, and generated caches out of version contro
 The repository includes a Vercel Python function adapter in `api/index.py` and the routing configuration in `vercel.json`.
 
 1. Import the repository into Vercel.
-2. Add `DATABASE_URL`, `LLM_PROVIDER`, the matching `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, `SMTP_PROVIDER`, `SMTP_USER`, `SMTP_PASSWORD`, `SENDER_NAME`, `APP_EMAIL`, `APP_PASSWORD`, and `SESSION_SECRET` as project environment variables. Add `SMTP_HOST` only when using a regional Zoho host or `SMTP_PROVIDER=custom`.
+2. Add `DATABASE_URL`, `LLM_PROVIDER`, the matching `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, `SMTP_PROVIDER`, `SMTP_USER`, `SMTP_PASSWORD`, `SENDER_NAME`, `APP_BASE_URL`, `APP_EMAIL`, `APP_PASSWORD`, and `SESSION_SECRET` as project environment variables. Add `SMTP_HOST` only when using a regional Zoho host or `SMTP_PROVIDER=custom`, and `DKIM_SELECTOR` if your DKIM selector is custom. Redeploy after changing any environment variable.
 3. Deploy with the default Vercel build settings.
 
 When `DATABASE_URL` is configured, Neon is used for durable shared contacts, company profiles, and send logs. The file-based fallback remains available for local development.

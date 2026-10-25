@@ -11,7 +11,7 @@ from . import config
 logger = logging.getLogger(__name__)
 
 
-def wrap_in_html(body, sender_name):
+def wrap_in_html(body, sender_name, unsubscribe_url: str | None = None):
     paragraphs = body.split("\n\n")
     html_paragraphs = ""
     for p in paragraphs:
@@ -26,7 +26,11 @@ def wrap_in_html(body, sender_name):
     html += html_paragraphs
     html += "<hr style='border:none; border-top:1px solid #eee; margin:24px 0;'>"
     html += "<p style='font-size:12px; color:#999;'>"
-    html += "If you don't want these emails, reply with unsubscribe."
+    if unsubscribe_url:
+        html += "Don't want these emails? "
+        html += "<a href='" + escape(unsubscribe_url, quote=True) + "' style='color:#999;'>Unsubscribe</a>."
+    else:
+        html += "If you don't want these emails, reply with unsubscribe."
     html += "</p></body></html>"
     return html
 
@@ -97,6 +101,11 @@ def _smtp_connection(settings: dict):
     return smtplib.SMTP_SSL(settings["host"], settings["port"], timeout=30)
 
 
+def sending_domain(provider: str | None = None) -> str:
+    user = _get_smtp_settings(provider)["user"]
+    return user.rsplit("@", 1)[-1].strip().lower() if "@" in user else ""
+
+
 def send_email(
     to_email,
     subject,
@@ -106,6 +115,7 @@ def send_email(
     smtp_user: str | None = None,
     smtp_password: str | None = None,
     sender_name: str | None = None,
+    unsubscribe_url: str | None = None,
 ) -> tuple[bool, str]:
     """Sends the message over the configured SMTP provider. Returns (sent, error_message)."""
     settings = _get_smtp_settings(smtp_provider)
@@ -136,13 +146,26 @@ def send_email(
     msg["Subject"] = subject
     msg["From"] = formataddr((from_name, settings["user"]))
     msg["To"] = to_email
-    msg["Reply-To"] = settings["user"]
+    msg["Reply-To"] = formataddr((from_name, settings["user"]))
     msg["Date"] = formatdate(localtime=False)
-    msg["Message-ID"] = make_msgid()
-    msg["X-Mailer"] = "Email Automation"
-    msg["List-Unsubscribe"] = "<mailto:" + settings["user"] + "?subject=unsubscribe>"
+    sender_domain = settings["user"].rsplit("@", 1)[-1].strip().lower() if "@" in settings["user"] else ""
+    if sender_domain and all(ch.isalnum() or ch in ".-" for ch in sender_domain):
+        msg["Message-ID"] = make_msgid(domain=sender_domain)
+    else:
+        msg["Message-ID"] = make_msgid()
 
-    msg.attach(MIMEText(text_body or "Please view this message in an HTML-capable email client.", "plain", "utf-8"))
+    unsubscribe_targets = []
+    if unsubscribe_url:
+        unsubscribe_targets.append(f"<{unsubscribe_url}>")
+    unsubscribe_targets.append(f"<mailto:{settings['user']}?subject=unsubscribe>")
+    msg["List-Unsubscribe"] = ", ".join(unsubscribe_targets)
+    if unsubscribe_url:
+        msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+
+    plain_body = text_body or "Please view this message in an HTML-capable email client."
+    if unsubscribe_url:
+        plain_body = plain_body.rstrip() + f"\n\nUnsubscribe: {unsubscribe_url}"
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
