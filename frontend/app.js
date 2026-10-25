@@ -224,6 +224,41 @@ function closeDeliverabilityModal() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Confirmation modal                                                  */
+/* ------------------------------------------------------------------ */
+
+let confirmResolve = null;
+
+function askConfirm({ title, message, icon = "✉", acceptLabel = "Yes, send", warn = false }) {
+  if (confirmResolve) {
+    const previous = confirmResolve;
+    confirmResolve = null;
+    previous(false);
+  }
+
+  $("confirm-modal-title").textContent = title;
+  $("confirm-modal-message").textContent = message;
+  $("confirm-modal-icon").textContent = icon;
+  $("confirm-modal-icon").classList.toggle("warn", warn);
+  $("confirm-accept-btn").textContent = acceptLabel;
+  $("confirm-modal").classList.remove("hidden");
+  $("confirm-accept-btn").focus();
+
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+  });
+}
+
+function settleConfirm(result) {
+  const modal = $("confirm-modal");
+  if (modal.classList.contains("hidden")) return;
+  modal.classList.add("hidden");
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  if (resolve) resolve(result);
+}
+
+/* ------------------------------------------------------------------ */
 /* Auth                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -966,12 +1001,23 @@ async function sendPitch() {
   }
 
   const highRisk = state.pitchSpamScore >= 7;
-  const confirmed = window.confirm(
+  const canSend = await askConfirm(
     highRisk
-      ? `⚠️ High spam risk (${state.pitchSpamScore}/10).\n\nThis message may go to spam or be filtered.\n\nAre you sure you want to send this pitch to ${recipient}?`
-      : `Send this pitch to ${recipient}?\n\nSubject: ${subject}`
+      ? {
+          title: `High spam risk (${state.pitchSpamScore}/10)`,
+          message: `This message may go to spam or be filtered.\n\nSend this pitch to ${recipient}?`,
+          icon: "⚠",
+          warn: true,
+          acceptLabel: "Send anyway",
+        }
+      : {
+          title: "Send this pitch?",
+          message: `${recipient}\n\nSubject: ${subject}`,
+          icon: "✉",
+          acceptLabel: "Yes, send pitch",
+        }
   );
-  if (!confirmed) return;
+  if (!canSend) return;
 
   const button = $("pitch-send-button");
   button.disabled = true;
@@ -983,7 +1029,14 @@ async function sendPitch() {
     button.textContent = "Sent";
   } catch (error) {
     if (error.status === 422 && /spam score/i.test(error.message)) {
-      if (window.confirm(`⚠️ ${error.message}\n\nAre you sure you want to send it anyway?`)) {
+      const sendAnyway = await askConfirm({
+        title: "High spam risk",
+        message: `${error.message}\n\nSend it anyway?`,
+        icon: "⚠",
+        warn: true,
+        acceptLabel: "Send anyway",
+      });
+      if (sendAnyway) {
         try {
           const data = await postPitch(true);
           notify(data.message || "Pitch sent.");
@@ -1163,8 +1216,16 @@ function bindEvents() {
   $("company-modal").addEventListener("click", (event) => {
     if (event.target === $("company-modal")) closeCompanyModal();
   });
+
+  $("confirm-accept-btn").addEventListener("click", () => settleConfirm(true));
+  $("confirm-cancel-btn").addEventListener("click", () => settleConfirm(false));
+  $("confirm-modal").addEventListener("click", (event) => {
+    if (event.target === $("confirm-modal")) settleConfirm(false);
+  });
+
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    if (!$("confirm-modal").classList.contains("hidden")) settleConfirm(false);
     if (!$("company-modal").classList.contains("hidden")) closeCompanyModal();
     if (!$("deliverability-modal").classList.contains("hidden")) closeDeliverabilityModal();
   });

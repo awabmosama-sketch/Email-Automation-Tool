@@ -364,6 +364,19 @@
     </div>
   </div>
 
+  <!-- SEND CONFIRMATION MODAL -->
+  <div id="confirm-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-message">
+    <div class="modal-card confirm-card">
+      <span id="confirm-modal-icon" class="confirm-icon" aria-hidden="true">✉</span>
+      <h3 id="confirm-modal-title">Send this pitch?</h3>
+      <p id="confirm-modal-message" class="confirm-message"></p>
+      <div class="modal-footer confirm-actions">
+        <button type="button" id="confirm-cancel-btn" class="btn btn-ghost">Cancel</button>
+        <button type="button" id="confirm-accept-btn" class="btn btn-primary">Yes, send</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script src="/frontend/app.js"></script>
 </body>

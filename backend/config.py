@@ -17,7 +17,7 @@ load_dotenv(BASE_DIR / ".env")
 # that appears in the From header. Legacy GMAIL_USER / GMAIL_APP_PASSWORD are
 # still honoured, but only while SMTP_PROVIDER=gmail.
 # ---------------------------------------------------------------------------
-SMTP_PROVIDER = (os.getenv("SMTP_PROVIDER", "gmail").strip().lower() or "gmail")
+SMTP_PROVIDER = (os.getenv("SMTP_PROVIDER", "zoho").strip().lower() or "zoho")
 
 _SMTP_PROVIDER_DEFAULTS = {
     "gmail": ("smtp.gmail.com", 465, "ssl"),

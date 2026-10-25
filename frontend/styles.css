@@ -543,6 +543,25 @@ input:focus, textarea:focus, select:focus {
 .modal-body { display: grid; gap: 14px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
 
+.confirm-card { max-width: 420px; text-align: center; }
+.confirm-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin: 4px auto 14px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--green-soft);
+  color: var(--green);
+  font-size: 23px;
+  line-height: 1;
+}
+.confirm-icon.warn { border-color: #fde68a; background: var(--amber-soft); color: var(--amber); }
+.confirm-card h3 { margin: 0 0 8px; font-size: 19px; letter-spacing: -0.03em; }
+.confirm-message { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; white-space: pre-line; }
+.confirm-actions { justify-content: center; margin-top: 22px; padding-top: 0; border-top: 0; }
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed;

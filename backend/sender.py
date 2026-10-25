@@ -43,7 +43,7 @@ _SMTP_PROVIDER_DEFAULTS = {
 
 
 def _get_smtp_settings(provider: str | None = None):
-    provider = (provider or config.SMTP_PROVIDER or "gmail").strip().lower()
+    provider = (provider or config.SMTP_PROVIDER or "zoho").strip().lower()
     if provider not in _SMTP_PROVIDER_DEFAULTS:
         provider = "custom"
 

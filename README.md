@@ -52,8 +52,8 @@ The default provider is Groq. To use Anthropic instead, set `LLM_PROVIDER=anthro
 
 | Provider | Host | Port | Security |
 |---|---|---|---|
+| `zoho` (default) | `smtp.zoho.com` | 465 | SSL |
 | `gmail` | `smtp.gmail.com` | 465 | SSL |
-| `zoho` | `smtp.zoho.com` | 465 | SSL |
 | `custom` | set `SMTP_HOST` | set `SMTP_PORT` | set `SMTP_SECURITY` |
 
 For Zoho, fill in only these two values in `.env`:
