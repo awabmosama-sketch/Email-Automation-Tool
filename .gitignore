@@ -8,3 +8,32 @@ __pycache__/
 *.egg-info/
 data/sent_log.csv
 .local-data/
+.env
+.env.*
+!.env.example
+!.env.example
+
+# runtime + user-local settings (never commit secrets)
+*.local.json
+settings.local.json
+.qoder/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Python runtime
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# local data / caches
+data/
+sent_log.csv

@@ -1,6 +1,7 @@
+import json
 import os
 import threading
-from typing import Any
+from typing import Any, Callable
 
 import psycopg
 from psycopg.rows import dict_row
@@ -60,6 +61,48 @@ CREATE TABLE IF NOT EXISTS suppressions (
     reason TEXT NOT NULL DEFAULT 'unsubscribe',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Campaign automation (senders, brands, templates, campaigns, leads, jobs,
+-- events) is stored as JSON documents. This keeps the schema flexible while
+-- still allowing atomic queue claims and indexed lookups in PostgreSQL.
+CREATE TABLE IF NOT EXISTS automation_docs (
+    collection TEXT NOT NULL,
+    id TEXT NOT NULL,
+    doc JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (collection, id)
+);
+
+CREATE INDEX IF NOT EXISTS automation_docs_collection_idx
+    ON automation_docs (collection);
+
+CREATE INDEX IF NOT EXISTS automation_docs_doc_gin
+    ON automation_docs USING GIN (doc jsonb_path_ops);
+
+CREATE INDEX IF NOT EXISTS automation_docs_jobs_due_idx
+    ON automation_docs ((doc ->> 'scheduled_at'))
+    WHERE collection = 'jobs';
+
+CREATE INDEX IF NOT EXISTS automation_docs_events_campaign_idx
+    ON automation_docs ((doc ->> 'campaign_id'), (doc ->> 'created_at'))
+    WHERE collection = 'events';
+
+-- Generic document store for campaigns, senders, templates, leads, and
+-- events. The JSONB payload keeps the PostgreSQL and local-file backends
+-- interchangeable while the volume stays small (thousands of rows).
+CREATE TABLE IF NOT EXISTS records (
+    collection TEXT NOT NULL,
+    id TEXT NOT NULL,
+    data JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (collection, id)
+);
+
+CREATE INDEX IF NOT EXISTS records_collection_idx
+    ON records (collection, created_at);
+CREATE INDEX IF NOT EXISTS records_campaign_idx
+    ON records (collection, (data ->> 'campaign_id'));
 """
 
 _pool: ConnectionPool | None = None
@@ -226,6 +269,40 @@ def set_meta(key: str, value: str) -> None:
         )
 
 
+def mutate_meta(key: str, mutator: Callable[[dict[str, Any]], Any]) -> Any:
+    """Atomically reads, mutates, and saves a JSON document stored in app_meta.
+
+    The row is locked with SELECT ... FOR UPDATE, so concurrent workers on
+    different processes cannot claim the same queued recipient.
+    """
+    with _connect() as connection:
+        connection.execute(
+            "INSERT INTO app_meta (key, value) VALUES (%s, '{}') "
+            "ON CONFLICT (key) DO NOTHING",
+            (key,),
+        )
+        row = connection.execute(
+            "SELECT value FROM app_meta WHERE key = %s FOR UPDATE", (key,)
+        ).fetchone()
+        raw = row["value"] if row else ""
+        try:
+            state = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            state = {}
+        result = mutator(state)
+        connection.execute(
+            "UPDATE app_meta SET value = %s WHERE key = %s",
+            (json.dumps(state), key),
+        )
+        return result
+
+
+def load_suppressions() -> set[str]:
+    with _connect() as connection:
+        rows = connection.execute("SELECT email FROM suppressions").fetchall()
+    return {str(row["email"]).strip().lower() for row in rows}
+
+
 def log_send(email: str, status: str, subject: str) -> None:
     with _connect() as connection:
         connection.execute(
@@ -266,3 +343,115 @@ def count_sent_today() -> int:
             """
         ).fetchone()
     return int(row["count"]) if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Generic campaign document store
+# ---------------------------------------------------------------------------
+
+
+def _record_filters(filters: dict[str, Any] | None) -> tuple[str, list[Any]]:
+    clause = ""
+    params: list[Any] = []
+    for key, value in (filters or {}).items():
+        if value is None:
+            continue
+        clause += " AND data ->> %s = %s"
+        params.extend([str(key), str(value)])
+    return clause, params
+
+
+def list_records(collection: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    clause, params = _record_filters(filters)
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT data FROM records WHERE collection = %s" + clause + " ORDER BY created_at, id",
+            [collection, *params],
+        ).fetchall()
+    return [row["data"] for row in rows]
+
+
+def get_record(collection: str, record_id: str) -> dict[str, Any] | None:
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT data FROM records WHERE collection = %s AND id = %s",
+            (collection, record_id),
+        ).fetchone()
+    return row["data"] if row else None
+
+
+def save_record(collection: str, record_id: str, data: dict[str, Any]) -> None:
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO records (collection, id, data)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (collection, id)
+            DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
+            """,
+            (collection, record_id, Jsonb(data)),
+        )
+
+
+def save_records(collection: str, records: list[dict[str, Any]]) -> None:
+    """Upserts many records in one round trip (id lives in 'id')."""
+    if not records:
+        return
+    with _connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO records (collection, id, data)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (collection, id)
+                DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
+                """,
+                [(collection, record["id"], Jsonb(record)) for record in records],
+            )
+
+
+def delete_record(collection: str, record_id: str) -> bool:
+    with _connect() as connection:
+        cursor = connection.execute(
+            "DELETE FROM records WHERE collection = %s AND id = %s",
+            (collection, record_id),
+        )
+        return cursor.rowcount > 0
+
+
+def delete_records(collection: str, filters: dict[str, Any] | None = None) -> int:
+    clause, params = _record_filters(filters)
+    with _connect() as connection:
+        cursor = connection.execute(
+            "DELETE FROM records WHERE collection = %s" + clause,
+            [collection, *params],
+        )
+        return cursor.rowcount
+
+
+def claim_record_status(
+    collection: str,
+    record_id: str,
+    field: str,
+    expected: str,
+    new_value: str,
+) -> dict[str, Any] | None:
+    """Atomically moves a record from one status to another.
+
+    Used by the send queue so two worker ticks can never send the same lead.
+    Returns the updated record, or None if another worker claimed it first.
+    """
+    with _connect() as connection:
+        row = connection.execute(
+            """
+            UPDATE records
+            SET data = jsonb_set(data, %s::text[], to_jsonb(%s::text), true),
+                updated_at = NOW()
+            WHERE collection = %s
+              AND id = %s
+              AND data ->> %s = %s
+            RETURNING data
+            """,
+            (f"{{{field}}}", new_value, collection, record_id, field, expected),
+        ).fetchone()
+    return row["data"] if row else None

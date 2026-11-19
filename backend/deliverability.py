@@ -66,11 +66,14 @@ def _check_dmarc(domain: str) -> dict[str, Any]:
     return {"status": "missing", "record": "", "policy": "", "detail": "No DMARC record found."}
 
 
-def _check_dkim(domain: str) -> dict[str, Any]:
-    selectors = [config.DKIM_SELECTOR] if config.DKIM_SELECTOR else list(COMMON_DKIM_SELECTORS)
+def _check_dkim(domain: str, selector: str = "") -> dict[str, Any]:
+    selector = (selector or "").strip().lower()
+    selectors = [selector] if selector else (
+        [config.DKIM_SELECTOR] if config.DKIM_SELECTOR else list(COMMON_DKIM_SELECTORS)
+    )
     looked_up = 0
-    for selector in selectors:
-        records = _txt_records(f"{selector}._domainkey.{domain}")
+    for candidate in selectors:
+        records = _txt_records(f"{candidate}._domainkey.{domain}")
         if records is None:
             # A resolver-level failure will not improve by trying more selectors.
             break
@@ -82,31 +85,121 @@ def _check_dkim(domain: str) -> dict[str, Any]:
         if record:
             return {
                 "status": "pass",
-                "selector": selector,
+                "selector": candidate,
                 "record": record,
-                "detail": f"DKIM key found at selector '{selector}'.",
+                "detail": f"DKIM key found at selector '{candidate}'.",
             }
     if not looked_up:
         return {
             "status": "error",
-            "selector": config.DKIM_SELECTOR,
+            "selector": selector or config.DKIM_SELECTOR,
             "record": "",
             "detail": "DNS lookup failed.",
         }
     return {
         "status": "missing",
-        "selector": config.DKIM_SELECTOR,
+        "selector": selector or config.DKIM_SELECTOR,
         "record": "",
         "detail": f"No DKIM key found for selectors: {', '.join(selectors)}.",
     }
 
 
-def check_domain(domain: str, provider: str | None = None, refresh: bool = False) -> dict[str, Any]:
+_SPF_INCLUDES = {
+    "zoho": "include:zoho.com",
+    "gmail": "include:_spf.google.com",
+    "outlook": "include:spf.protection.outlook.com",
+}
+
+
+def _setup_guidance(domain: str, provider: str, selector: str) -> dict[str, Any]:
+    include = _SPF_INCLUDES.get(provider, "include:YOUR_SMTP_PROVIDER")
+    dkim_selector = selector or config.DKIM_SELECTOR or "selector"
+    return {
+        "spf": {
+            "host": domain,
+            "type": "TXT",
+            "value": f"v=spf1 {include} ~all",
+            "note": "Merge with any existing SPF record instead of publishing a second one.",
+        },
+        "dkim": {
+            "host": f"{dkim_selector}._domainkey.{domain}",
+            "type": "TXT",
+            "value": "<public key from your mail provider>",
+            "note": (
+                "Enable DKIM in your provider's admin console and publish the exact TXT "
+                "record it gives you. The selector must match the one used for signing."
+            ),
+        },
+        "dmarc": {
+            "host": f"_dmarc.{domain}",
+            "type": "TXT",
+            "value": f"v=DMARC1; p=none; rua=mailto:postmaster@{domain}",
+            "note": "Start with p=none while reviewing reports, then move to quarantine.",
+        },
+    }
+
+
+def recommended_records(
+    domain: str,
+    provider: str | None = None,
+    *,
+    dkim_selector: str = "",
+    spf_include: str = "",
+    dmarc_policy: str = "none",
+) -> dict[str, Any]:
+    """Per-sender DNS records with strict SPF/DKIM alignment enforced."""
     domain = (domain or "").strip().lower()
+    provider_id = (provider or config.SMTP_PROVIDER or "").strip().lower()
+    include = (spf_include or "").strip() or _SPF_INCLUDES.get(
+        provider_id, "include:YOUR_SMTP_PROVIDER"
+    )
+    selector = (dkim_selector or config.DKIM_SELECTOR or "selector").strip().lower()
+    policy = dmarc_policy if dmarc_policy in {"none", "quarantine", "reject"} else "none"
+    return {
+        "spf": {
+            "host": domain,
+            "type": "TXT",
+            "value": f"v=spf1 {include} ~all",
+            "note": "Keep exactly one SPF record and merge any existing includes.",
+        },
+        "dkim": {
+            "host": f"{selector}._domainkey.{domain}",
+            "type": "TXT",
+            "value": "<public key from your mail provider>",
+            "note": (
+                "Enable DKIM in the provider's admin console and publish the exact TXT "
+                "record it supplies. The selector must match the signing selector."
+            ),
+            "selector": selector,
+        },
+        "dmarc": {
+            "host": f"_dmarc.{domain}",
+            "type": "TXT",
+            "value": (
+                f"v=DMARC1; p={policy}; rua=mailto:dmarc@{domain}; "
+                "adkim=s; aspf=s; pct=100"
+            ),
+            "note": (
+                "adkim=s and aspf=s enforce strict alignment. Start with p=none while "
+                "monitoring reports, then move to quarantine or reject."
+            ),
+        },
+    }
+
+
+def check_domain(
+    domain: str,
+    provider: str | None = None,
+    refresh: bool = False,
+    dkim_selector: str = "",
+) -> dict[str, Any]:
+    domain = (domain or "").strip().lower()
+    selector = (dkim_selector or "").strip().lower()
     now = time.monotonic()
+    cache_key = f"{domain}|{selector}"
     if not refresh:
         with _cache_lock:
-            cached = _cache.get(domain)
+            cached = _cache.get(cache_key)
         if cached and cached[0] > now:
             result = copy.deepcopy(cached[1])
             result["provider"] = provider or config.SMTP_PROVIDER
@@ -116,7 +209,7 @@ def check_domain(domain: str, provider: str | None = None, refresh: bool = False
     # endpoint responsive when a resolver is slow.
     with ThreadPoolExecutor(max_workers=3) as executor:
         spf_future = executor.submit(_check_spf, domain)
-        dkim_future = executor.submit(_check_dkim, domain)
+        dkim_future = executor.submit(_check_dkim, domain, selector)
         dmarc_future = executor.submit(_check_dmarc, domain)
         spf = spf_future.result()
         dkim = dkim_future.result()
@@ -157,14 +250,16 @@ def check_domain(domain: str, provider: str | None = None, refresh: bool = False
         "provider": provider or config.SMTP_PROVIDER,
         "domain": domain,
         "overall": "pass" if all(check["status"] == "pass" for check in checks) else "attention",
+        "authenticated": all(check["status"] == "pass" for check in checks),
         "spf": spf,
         "dkim": dkim,
         "dmarc": dmarc,
+        "setup": _setup_guidance(domain, provider or config.SMTP_PROVIDER, selector),
         "tips": tips,
     }
     with _cache_lock:
         if len(_cache) > 200:
             for key in [key for key, (expires, _) in _cache.items() if expires <= now]:
                 _cache.pop(key, None)
-        _cache[domain] = (now + _CACHE_SECONDS, copy.deepcopy(result))
+        _cache[cache_key] = (now + _CACHE_SECONDS, copy.deepcopy(result))
     return result

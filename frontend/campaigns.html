@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Campaign console | Email Automation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/frontend/styles.css">
+  <link rel="stylesheet" href="/frontend/campaigns.css">
+</head>
+<body>
+  <div class="page console-page">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Email Automation home">
+        <span class="brand-mark">EA</span>
+        <span class="brand-text">
+          <strong>Email Automation</strong>
+          <small>Campaign console</small>
+        </span>
+      </a>
+      <div class="topbar-actions">
+        <a class="btn btn-ghost btn-sm" href="/">Composer</a>
+        <span class="status" title="Queue worker status">
+          <span id="worker-dot" class="status-dot"></span>
+          <span id="worker-text">Worker idle</span>
+        </span>
+        <span class="account" id="account-block">
+          <span class="avatar" id="account-avatar">A</span>
+          <span id="account-email" class="account-email"></span>
+        </span>
+        <button type="button" id="logout-button" class="btn btn-ghost btn-sm">Sign out</button>
+      </div>
+    </header>
+
+    <section class="page-head">
+      <div>
+        <p class="eyebrow">Isolated campaigns</p>
+        <h1>Sheets in. Replies out.</h1>
+        <p class="sub">Each campaign keeps its own sheet, template, sender, rate limits, and schedule.</p>
+      </div>
+      <div class="page-head-note">
+        <span class="dot"></span>
+        <span>Randomised delays, hourly + daily caps, durable queue</span>
+      </div>
+    </section>
+
+    <section class="stat-grid" aria-label="Workspace totals">
+      <article class="stat-card">
+        <span class="stat-label">Sent</span>
+        <strong id="stat-sent">0</strong>
+        <span class="stat-foot" id="stat-today">0 today</span>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Queued</span>
+        <strong id="stat-queued">0</strong>
+        <span class="stat-foot" id="stat-running">0 running campaigns</span>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Bounced</span>
+        <strong id="stat-bounced">0</strong>
+        <span class="stat-foot" id="stat-bounce-rate">0% bounce rate</span>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Inboxed</span>
+        <strong id="stat-inboxed">0</strong>
+        <span class="stat-foot">Reported by provider webhook</span>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Spam alerts</span>
+        <strong id="stat-spam">0</strong>
+        <span class="stat-foot" id="stat-spam-rate">0% spam rate</span>
+      </article>
+    </section>
+
+    <div id="console-notice" class="notice hidden" role="status" aria-live="polite"></div>
+
+    <div class="console-tabs" role="tablist" aria-label="Campaign console sections">
+      <button type="button" class="tab active" data-tab="campaigns" role="tab" aria-selected="true">Campaigns</button>
+      <button type="button" class="tab" data-tab="templates" role="tab" aria-selected="false">Templates</button>
+      <button type="button" class="tab" data-tab="senders" role="tab" aria-selected="false">Senders</button>
+      <button type="button" class="tab" data-tab="brands" role="tab" aria-selected="false">Brands</button>
+    </div>
+
+    <main>
+      <section id="panel-campaigns" class="tab-panel" role="tabpanel">
+        <div class="console-toolbar">
+          <div>
+            <h2>Campaigns</h2>
+            <p class="muted small">Sync a Google Sheet, then start sending inside each campaign's window.</p>
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" id="run-queue-button" class="btn btn-ghost btn-sm">Run queue now</button>
+            <button type="button" id="refresh-button" class="btn btn-ghost btn-sm">Refresh</button>
+            <button type="button" id="new-campaign-button" class="btn btn-primary btn-sm">+ New campaign</button>
+          </div>
+        </div>
+        <div id="campaign-list" class="card-list">
+          <div class="empty">Loading campaigns…</div>
+        </div>
+      </section>
+
+      <section id="panel-templates" class="tab-panel hidden" role="tabpanel">
+        <div class="console-toolbar">
+          <div>
+            <h2>Templates</h2>
+            <p class="muted small">Use {{First Name}}, {{Company Name}}, {{Position}}, and {{signature}}.</p>
+          </div>
+          <button type="button" id="new-template-button" class="btn btn-primary btn-sm">+ New template</button>
+        </div>
+        <div id="template-list" class="card-list"></div>
+      </section>
+
+      <section id="panel-senders" class="tab-panel hidden" role="tabpanel">
+        <div class="console-toolbar">
+          <div>
+            <h2>Sending accounts</h2>
+            <p class="muted small">SMTP app passwords and OAuth tokens are encrypted at rest.</p>
+          </div>
+          <button type="button" id="new-sender-button" class="btn btn-primary btn-sm">+ New sender</button>
+        </div>
+        <div id="sender-list" class="card-list"></div>
+      </section>
+
+      <section id="panel-brands" class="tab-panel hidden" role="tabpanel">
+        <div class="console-toolbar">
+          <div>
+            <h2>Brands</h2>
+            <p class="muted small">Reuse one signature and domain across multiple campaigns.</p>
+          </div>
+          <button type="button" id="new-brand-button" class="btn btn-primary btn-sm">+ New brand</button>
+        </div>
+        <div id="brand-list" class="card-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- CAMPAIGN EDITOR -->
+  <div id="campaign-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="campaign-modal-title">
+    <div class="modal-card wide-modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="campaign-modal-title">New campaign</h3>
+          <p class="muted small">Everything here is isolated to this campaign.</p>
+        </div>
+        <button type="button" class="close-btn" data-close="campaign-modal" aria-label="Close">&times;</button>
+      </div>
+      <form id="campaign-form">
+        <div class="modal-body">
+          <div class="grid grid-2">
+            <label>Campaign name <span class="req">*</span>
+              <input id="campaign-name" maxlength="120" required placeholder="e.g. Q1 SaaS founders">
+            </label>
+            <label>Timezone
+              <input id="campaign-timezone" maxlength="80" list="timezone-list" placeholder="Europe/Berlin">
+            </label>
+          </div>
+          <label>Google Sheet URL <span class="req">*</span>
+            <input id="campaign-sheet-url" maxlength="1000" placeholder="https://docs.google.com/spreadsheets/d/…">
+          </label>
+          <div class="grid grid-3">
+            <label>Tab name
+              <input id="campaign-sheet-tab" maxlength="100" placeholder="Leads (optional)">
+            </label>
+            <label>Sheet gid
+              <input id="campaign-sheet-gid" maxlength="20" placeholder="0">
+            </label>
+            <div class="field-action">
+              <span class="muted small">Check the columns before saving</span>
+              <button type="button" id="preview-sheet-button" class="btn btn-ghost btn-sm">Preview sheet</button>
+            </div>
+          </div>
+          <div id="sheet-preview" class="sheet-preview hidden"></div>
+
+          <div class="grid grid-3">
+            <label>Sender
+              <select id="campaign-sender"></select>
+            </label>
+            <label>Template
+              <select id="campaign-template"></select>
+            </label>
+            <label>Brand
+              <select id="campaign-brand"></select>
+            </label>
+          </div>
+
+          <div class="grid grid-4">
+            <label>Per hour
+              <input id="campaign-hourly" type="number" min="1" max="100" step="1">
+            </label>
+            <label>Per day
+              <input id="campaign-daily" type="number" min="1" max="500" step="1">
+            </label>
+            <label>Min delay (min)
+              <input id="campaign-delay-min" type="number" min="1" max="240" step="1">
+            </label>
+            <label>Max delay (min)
+              <input id="campaign-delay-max" type="number" min="1" max="240" step="1">
+            </label>
+          </div>
+          <div class="grid grid-2">
+            <label>Send window starts
+              <select id="campaign-work-start"></select>
+            </label>
+            <label>Send window ends
+              <select id="campaign-work-end"></select>
+            </label>
+          </div>
+          <div class="check-row">
+            <label class="check"><input id="campaign-weekdays" type="checkbox"> Weekdays only</label>
+            <label class="check"><input id="campaign-autocomplete" type="checkbox" checked> Mark completed automatically</label>
+            <label class="check"><input id="campaign-use-ai" type="checkbox"> AI personalise each email</label>
+          </div>
+          <label id="campaign-ai-wrap" class="hidden">AI prompt
+            <textarea id="campaign-ai-prompt" rows="3" maxlength="5000" placeholder="Write a short, specific first line using the lead's company and role. Keep the template's structure."></textarea>
+          </label>
+          <label>Unsubscribe base URL <span class="optional">(optional)</span>
+            <input id="campaign-unsubscribe" maxlength="500" placeholder="https://yourdomain.com">
+          </label>
+
+          <details class="mapping-details">
+            <summary>Column mapping</summary>
+            <p class="muted small">Phone columns are never imported. Map the five fields you need.</p>
+            <div id="mapping-grid" class="grid grid-2"></div>
+          </details>
+
+          <div id="campaign-form-error" class="notice error hidden" role="alert"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="campaign-modal">Cancel</button>
+          <button type="submit" id="save-campaign-button" class="btn btn-primary">Save campaign</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- TEMPLATE EDITOR -->
+  <div id="template-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="template-modal-title">
+    <div class="modal-card wide-modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="template-modal-title">New template</h3>
+          <p class="muted small">Placeholders are replaced for every recipient.</p>
+        </div>
+        <button type="button" class="close-btn" data-close="template-modal" aria-label="Close">&times;</button>
+      </div>
+      <form id="template-form">
+        <div class="modal-body">
+          <div class="grid grid-2">
+            <label>Template name <span class="req">*</span>
+              <input id="template-name" maxlength="100" required placeholder="e.g. Short founder intro">
+            </label>
+            <label>Brand
+              <select id="template-brand"></select>
+            </label>
+          </div>
+          <label>Subject <span class="req">*</span>
+            <input id="template-subject" maxlength="300" required placeholder="Quick idea for {{Company Name}}">
+          </label>
+          <div class="placeholder-bar">
+            <span class="muted small">Insert:</span>
+            <button type="button" class="chip" data-placeholder="{{First Name}}">First Name</button>
+            <button type="button" class="chip" data-placeholder="{{Company Name}}">Company Name</button>
+            <button type="button" class="chip" data-placeholder="{{Position}}">Position</button>
+            <button type="button" class="chip" data-placeholder="{{signature}}">Signature</button>
+          </div>
+          <label>Body <span class="req">*</span>
+            <textarea id="template-body" rows="10" maxlength="20000" required placeholder="Hi {{First Name}},&#10;&#10;I noticed you are {{Position}} at {{Company Name}}…&#10;&#10;{{signature}}"></textarea>
+          </label>
+          <label>AI prompt <span class="optional">(used when a campaign enables AI)</span>
+            <textarea id="template-prompt" rows="3" maxlength="5000" placeholder="Describe the tone and the one personalised detail to mention."></textarea>
+          </label>
+          <div id="template-form-error" class="notice error hidden" role="alert"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="template-modal">Cancel</button>
+          <button type="submit" id="save-template-button" class="btn btn-primary">Save template</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- SENDER EDITOR -->
+  <div id="sender-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sender-modal-title">
+    <div class="modal-card wide-modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="sender-modal-title">New sender</h3>
+          <p class="muted small">Use an app password, not your normal mailbox password.</p>
+        </div>
+        <button type="button" class="close-btn" data-close="sender-modal" aria-label="Close">&times;</button>
+      </div>
+      <form id="sender-form">
+        <div class="modal-body">
+          <div class="grid grid-2">
+            <label>From email <span class="req">*</span>
+              <input id="sender-email" type="email" maxlength="320" required placeholder="sales@yourdomain.com">
+            </label>
+            <label>Display name
+              <input id="sender-name" maxlength="100" placeholder="Sales team">
+            </label>
+          </div>
+          <div class="grid grid-3">
+            <label>Provider
+              <select id="sender-provider">
+                <option value="smtp">Custom SMTP</option>
+                <option value="zoho">Zoho</option>
+                <option value="gmail">Gmail</option>
+              </select>
+            </label>
+            <label>SMTP host
+              <input id="sender-host" maxlength="255" placeholder="smtp.yourdomain.com">
+            </label>
+            <label>Port
+              <input id="sender-port" type="number" min="1" max="65535" placeholder="465 or 587">
+            </label>
+          </div>
+          <p id="sender-provider-hint" class="muted small">
+            Sending from your own domain? Pick <b>Custom SMTP</b> and copy the host, port, and
+            security mode from your mailbox host's SMTP settings (usually
+            <code>smtp.yourdomain.com</code> or <code>mail.yourdomain.com</code>), then add SPF,
+            DKIM, and DMARC for that domain in the fields below.
+          </p>
+          <div class="grid grid-3">
+            <label>Security
+              <select id="sender-security">
+                <option value="ssl">SSL</option>
+                <option value="starttls">STARTTLS</option>
+              </select>
+            </label>
+            <label>SMTP username
+              <input id="sender-username" maxlength="320" placeholder="you@yourdomain.com (usually the same as From)">
+            </label>
+            <label>App password <span id="sender-password-req" class="req">*</span>
+              <input id="sender-password" type="password" maxlength="500" autocomplete="new-password" placeholder="Leave blank to keep the saved password">
+            </label>
+          </div>
+          <div class="grid grid-3">
+            <label>Brand
+              <input id="sender-brand" maxlength="100" placeholder="Optional label">
+            </label>
+            <label>DKIM selector
+              <input id="sender-dkim" maxlength="100" placeholder="e.g. zoho">
+            </label>
+            <label>Timezone
+              <input id="sender-timezone" maxlength="80" list="timezone-list" placeholder="UTC">
+            </label>
+          </div>
+          <div class="grid grid-2">
+            <label>SPF include <span class="optional">(per sending domain)</span>
+              <input id="sender-spf" maxlength="255" list="spf-include-list" pattern="(include:[A-Za-z0-9.-]+)?" title="A single include:provider.tld value, e.g. include:zoho.com" placeholder="include:zoho.com">
+            </label>
+            <label>DMARC policy <span class="optional">(strict alignment)</span>
+              <select id="sender-dmarc">
+                <option value="none">p=none — monitor</option>
+                <option value="quarantine">p=quarantine</option>
+                <option value="reject">p=reject</option>
+              </select>
+            </label>
+          </div>
+          <div class="grid grid-2">
+            <label>Sender hourly cap <span class="optional">(0 = unlimited)</span>
+              <input id="sender-hourly" type="number" min="0" max="100" placeholder="0">
+            </label>
+            <label>Sender daily cap <span class="optional">(0 = unlimited)</span>
+              <input id="sender-daily" type="number" min="0" max="1000" placeholder="0">
+            </label>
+          </div>
+          <div id="sender-form-error" class="notice error hidden" role="alert"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="sender-modal">Cancel</button>
+          <button type="submit" id="save-sender-button" class="btn btn-primary">Save sender</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- BRAND EDITOR -->
+  <div id="brand-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="brand-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h3 id="brand-modal-title">New brand</h3>
+          <p class="muted small">One brand can power many campaigns.</p>
+        </div>
+        <button type="button" class="close-btn" data-close="brand-modal" aria-label="Close">&times;</button>
+      </div>
+      <form id="brand-form">
+        <div class="modal-body">
+          <div class="grid grid-2">
+            <label>Brand name <span class="req">*</span>
+              <input id="brand-name" maxlength="100" required placeholder="Northwind Labs">
+            </label>
+            <label>Domain
+              <input id="brand-domain" maxlength="200" placeholder="northwindlabs.com">
+            </label>
+          </div>
+          <label>Website
+            <input id="brand-website" maxlength="300" placeholder="https://northwindlabs.com">
+          </label>
+          <label>Short description
+            <textarea id="brand-description" rows="2" maxlength="1000" placeholder="What the brand does, in one or two lines."></textarea>
+          </label>
+          <label>Signature
+            <textarea id="brand-signature" rows="4" maxlength="2000" placeholder="Best regards,&#10;Your Name&#10;Northwind Labs"></textarea>
+          </label>
+          <div id="brand-form-error" class="notice error hidden" role="alert"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="brand-modal">Cancel</button>
+          <button type="submit" id="save-brand-button" class="btn btn-primary">Save brand</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- CAMPAIGN REPORT -->
+  <div id="report-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="report-modal-title">
+    <div class="modal-card report-modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="report-modal-title">Campaign report</h3>
+          <p class="muted small" id="report-subtitle"></p>
+        </div>
+        <button type="button" class="close-btn" data-close="report-modal" aria-label="Close">&times;</button>
+      </div>
+      <div id="report-body" class="modal-body">
+        <p class="muted">Loading report…</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="report-sync-button" class="btn btn-ghost">Sync sheet</button>
+        <button type="button" id="report-toggle-button" class="btn btn-primary">Pause</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DNS MODAL -->
+  <div id="dns-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="dns-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h3 id="dns-modal-title">DNS authentication</h3>
+          <p class="muted small" id="dns-subtitle">SPF, DKIM, and DMARC for this sender.</p>
+        </div>
+        <button type="button" class="close-btn" data-close="dns-modal" aria-label="Close">&times;</button>
+      </div>
+      <div id="dns-body" class="modal-body">
+        <p class="muted">Checking DNS…</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="dns-refresh-button" class="btn btn-ghost">Re-check</button>
+        <button type="button" class="btn btn-primary" data-close="dns-modal">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SENDER TEST -->
+  <div id="test-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="test-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h3 id="test-modal-title">Test sender</h3>
+          <p class="muted small" id="test-subtitle">Leave the recipient blank to only test the SMTP login.</p>
+        </div>
+        <button type="button" class="close-btn" data-close="test-modal" aria-label="Close">&times;</button>
+      </div>
+      <form id="test-form">
+        <div class="modal-body">
+          <label>Send a test email to
+            <input id="test-recipient" type="email" maxlength="320" placeholder="you@yourdomain.com">
+          </label>
+          <div id="test-result" class="notice hidden" role="status" aria-live="polite"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="test-modal">Close</button>
+          <button type="submit" id="run-test-button" class="btn btn-primary">Run test</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- CONFIRM -->
+  <div id="confirm-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal-card confirm-card">
+      <span class="confirm-icon" aria-hidden="true">!</span>
+      <h3 id="confirm-title">Are you sure?</h3>
+      <p id="confirm-message" class="confirm-message"></p>
+      <div class="modal-footer confirm-actions">
+        <button type="button" id="confirm-cancel" class="btn btn-ghost">Cancel</button>
+        <button type="button" id="confirm-accept" class="btn btn-primary">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <datalist id="timezone-list">
+    <option value="UTC"></option>
+    <option value="America/New_York"></option>
+    <option value="America/Chicago"></option>
+    <option value="America/Los_Angeles"></option>
+    <option value="Europe/London"></option>
+    <option value="Europe/Berlin"></option>
+    <option value="Europe/Paris"></option>
+    <option value="Asia/Dubai"></option>
+    <option value="Asia/Karachi"></option>
+    <option value="Asia/Kolkata"></option>
+    <option value="Asia/Singapore"></option>
+    <option value="Australia/Sydney"></option>
+  </datalist>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="/frontend/campaigns.js"></script>
+</body>
+</html>

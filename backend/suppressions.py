@@ -32,6 +32,18 @@ def is_suppressed(email: str) -> bool:
         return any(row["email"] == email for row in _load_local())
 
 
+def all_emails() -> set[str]:
+    """Returns every suppressed address, for bulk queue imports."""
+    if database.is_configured():
+        return database.load_suppressions()
+    with _lock:
+        return {
+            _normalize(row["email"])
+            for row in _load_local()
+            if _normalize(row["email"])
+        }
+
+
 def add(email: str, reason: str = "unsubscribe") -> None:
     email = _normalize(email)
     if not email:

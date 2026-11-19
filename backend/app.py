@@ -1,10 +1,13 @@
+import asyncio
 import base64
+from contextlib import asynccontextmanager
 import csv
 import hashlib
 import hmac
 from html import escape as html_escape
 import json
 import logging
+import os
 import re
 import secrets
 import time
@@ -23,8 +26,10 @@ from starlette.concurrency import run_in_threadpool
 from . import config
 from . import database
 from . import documents as document_store
+from . import outreach
+from . import sheets
 from . import suppressions
-from .deliverability import check_domain
+from .deliverability import check_domain, recommended_records
 from .unsubscribe import build_unsubscribe_url, verify_token
 from .companies import (
     add_or_update_company_profile,
@@ -32,7 +37,13 @@ from .companies import (
     save_all_company_profiles,
 )
 from .documents import DocumentError
-from .sender import send_email, sending_domain, wrap_in_html
+from .sender import (
+    send_account_email,
+    send_email,
+    sending_domain,
+    test_account,
+    wrap_in_html,
+)
 from .verifier import is_blocked_domain, is_valid_format, verify
 
 
@@ -40,6 +51,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONTACTS_FILE = config.CONTACTS_FILE
 FRONTEND_DIR = BASE_DIR / "frontend"
 FRONTEND_FILE = FRONTEND_DIR / "index.html"
+CAMPAIGNS_FILE = FRONTEND_DIR / "campaigns.html"
 LOGIN_FILE = FRONTEND_DIR / "login.html"
 
 SESSION_COOKIE = "ea_session"
@@ -97,6 +109,16 @@ async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
     if _is_https(request):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
+
+
+@app.exception_handler(outreach.OutreachError)
+async def outreach_error(request: Request, exc: outreach.OutreachError) -> JSONResponse:
+    return JSONResponse({"detail": exc.message}, status_code=exc.status_code)
+
+
+@app.exception_handler(sheets.SheetsError)
+async def sheets_error(request: Request, exc: sheets.SheetsError) -> JSONResponse:
+    return JSONResponse({"detail": str(exc)}, status_code=422)
 
 
 def _session_key() -> bytes:
@@ -157,6 +179,20 @@ def _safe_equal(left: str, right: str) -> bool:
     return secrets.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
 
 
+def _scheduler_authorized(request: Request) -> bool:
+    """True when a cron/webhook presents the configured shared secret."""
+    expected = config.QUEUE_TICK_SECRET
+    if not expected:
+        return False
+    provided = (request.headers.get("x-queue-secret") or "").strip()
+    authorization = (request.headers.get("authorization") or "").strip()
+    if not provided and authorization.lower().startswith("bearer "):
+        provided = authorization[7:].strip()
+    if not provided:
+        provided = (request.query_params.get("secret") or "").strip()
+    return bool(provided) and _safe_equal(provided, expected)
+
+
 def _login_allowed(client_ip: str) -> bool:
     now = time.time()
     if len(_login_attempts) > 5000:
@@ -179,6 +215,11 @@ async def require_session(request: Request, call_next):
         path = path.rstrip("/")
 
     if path in PUBLIC_PATHS or path in PUBLIC_ASSETS or path.startswith("/frontend/"):
+        return await call_next(request)
+
+    # Cron and provider webhooks authenticate with a shared secret instead of
+    # a browser session. Both are read-only in effect and never expose data.
+    if path in {"/api/queue/tick", "/api/outreach/webhook"} and _scheduler_authorized(request):
         return await call_next(request)
 
     if _session_email(request):
@@ -324,6 +365,84 @@ class CompanyCreateRequest(BaseModel):
     value_proposition: str = Field(default="", max_length=500)
     tone: str = Field(default="friendly-professional", max_length=100)
     signature: str = Field(default="", max_length=1000)
+
+
+class SenderRequest(BaseModel):
+    email: str = Field(default="", max_length=320)
+    name: str = Field(default="", max_length=100)
+    provider: str = Field(default="smtp", max_length=20)
+    host: str = Field(default="", max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    security: str = Field(default="", max_length=20)
+    username: str = Field(default="", max_length=320)
+    password: str = Field(default="", max_length=500)
+    brand: str = Field(default="", max_length=100)
+    dkim_selector: str = Field(default="", max_length=100)
+    spf_include: str | None = Field(default=None, max_length=255)
+    dmarc_policy: str | None = Field(default=None, max_length=20)
+    timezone: str = Field(default="UTC", max_length=80)
+    hourly_limit: int | None = Field(default=None, ge=0, le=1000)
+    daily_limit: int | None = Field(default=None, ge=0, le=10000)
+
+
+class SenderTestRequest(BaseModel):
+    recipient: str = Field(default="", max_length=320)
+
+
+class BrandRequest(BaseModel):
+    name: str = Field(default="", max_length=100)
+    domain: str = Field(default="", max_length=200)
+    website: str = Field(default="", max_length=300)
+    description: str = Field(default="", max_length=1000)
+    signature: str = Field(default="", max_length=2000)
+
+
+class TemplateRequest(BaseModel):
+    name: str = Field(default="", max_length=100)
+    brand_id: str = Field(default="", max_length=40)
+    subject: str = Field(default="", max_length=300)
+    body: str = Field(default="", max_length=20000)
+    prompt: str = Field(default="", max_length=5000)
+
+
+class CampaignRequest(BaseModel):
+    name: str = Field(default="", max_length=120)
+    sheet_url: str = Field(default="", max_length=1000)
+    sheet_gid: str = Field(default="0", max_length=20)
+    sheet_tab: str = Field(default="", max_length=100)
+    sender_id: str = Field(default="", max_length=40)
+    template_id: str = Field(default="", max_length=40)
+    brand_id: str = Field(default="", max_length=40)
+    timezone: str = Field(default="UTC", max_length=80)
+    hourly_limit: int | None = Field(default=None, ge=1, le=100)
+    daily_limit: int | None = Field(default=None, ge=1, le=500)
+    delay_min_minutes: float | None = Field(default=None, ge=1, le=240)
+    delay_max_minutes: float | None = Field(default=None, ge=1, le=240)
+    work_start_hour: int | None = Field(default=None, ge=0, le=23)
+    work_end_hour: int | None = Field(default=None, ge=1, le=24)
+    weekdays_only: bool = False
+    use_ai: bool = False
+    ai_prompt: str = Field(default="", max_length=5000)
+    auto_complete: bool = True
+    unsubscribe_base_url: str = Field(default="", max_length=500)
+    mapping: dict[str, str] = Field(default_factory=dict)
+
+
+class SheetPreviewRequest(BaseModel):
+    sheet_url: str = Field(default="", max_length=1000)
+    gid: str = Field(default="", max_length=20)
+    tab: str = Field(default="", max_length=100)
+    mapping: dict[str, str] = Field(default_factory=dict)
+
+
+class RecipientStatusRequest(BaseModel):
+    status: str = Field(default="", max_length=20)
+
+
+class OutreachWebhookRequest(BaseModel):
+    email: str = Field(default="", max_length=320)
+    status: str = Field(default="", max_length=20)
+    campaign_id: str = Field(default="", max_length=40)
 
 
 class LoginRequest(BaseModel):
@@ -489,6 +608,12 @@ def build_preview(contact: ContactRequest) -> dict[str, str]:
 @app.get("/", include_in_schema=False)
 def frontend() -> FileResponse:
     return FileResponse(FRONTEND_FILE)
+
+
+@app.get("/campaigns", include_in_schema=False)
+@app.get("/campaigns/", include_in_schema=False)
+def campaigns_page() -> FileResponse:
+    return FileResponse(CAMPAIGNS_FILE)
 
 
 @app.get("/login", include_in_schema=False)
@@ -665,18 +790,33 @@ def health() -> dict[str, Any]:
         "sender_domain": sending_domain(),
         "app_base_url_configured": bool(config.APP_BASE_URL),
         "auth_enabled": config.auth_enabled(),
+        "google_sheets_configured": bool(config.GOOGLE_SHEETS_API_KEY),
+        "queue_worker_enabled": config.QUEUE_WORKER_ENABLED,
+        "cron_secret_configured": bool(config.QUEUE_TICK_SECRET),
     }
 
 
 @app.get("/api/deliverability")
-def deliverability(request: Request, provider: str = "", refresh: bool = False) -> dict[str, Any]:
-    enforce_rate_limit(request, "deliverability:check", limit=12, window_seconds=60)
+def deliverability(
+    request: Request,
+    provider: str = "",
+    domain: str = "",
+    dkim_selector: str = "",
+    refresh: bool = False,
+) -> dict[str, Any]:
+    enforce_rate_limit(request, "deliverability:check", limit=30, window_seconds=60)
     requested = provider.strip().lower()
-    if requested and requested not in {"zoho", "gmail", "custom"}:
+    if requested and requested not in {"zoho", "gmail", "custom", "smtp", "outlook"}:
         raise HTTPException(status_code=400, detail="Unknown SMTP provider.")
 
-    domain = sending_domain(requested or None)
-    if not domain:
+    requested_domain = domain.strip().lower()
+    if requested_domain:
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", requested_domain):
+            raise HTTPException(status_code=400, detail="Enter a valid sending domain.")
+        target = requested_domain
+    else:
+        target = sending_domain(requested or None)
+    if not target:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -685,9 +825,14 @@ def deliverability(request: Request, provider: str = "", refresh: bool = False) 
             ),
         )
     try:
-        return check_domain(domain, requested or None, refresh=refresh)
+        return check_domain(
+            target,
+            requested or None,
+            refresh=refresh,
+            dkim_selector=dkim_selector,
+        )
     except Exception as error:
-        logger.exception("Deliverability check failed for %s", domain)
+        logger.exception("Deliverability check failed for %s", target)
         raise HTTPException(status_code=502, detail=f"DNS check failed: {error}") from error
 
 
@@ -1127,3 +1272,318 @@ def send_pitch(request: PitchSendRequest, http_request: Request) -> dict[str, An
         status_code=502,
         detail=f"Pitch email delivery failed: {send_error}",
     )
+
+# ---------------------------------------------------------------------------
+# Outreach: senders, brands, templates, campaigns, Google Sheets, and queue
+# ---------------------------------------------------------------------------
+
+
+def _sender_list() -> list[dict[str, Any]]:
+    state = outreach.load_state()
+    return [outreach.public_sender(sender) for sender in state["senders"]]
+
+
+def _sync_campaign_from_sheet(campaign_id: str) -> dict[str, Any]:
+    campaign = outreach.get_campaign(campaign_id)
+    if not campaign.get("sheet_url"):
+        raise HTTPException(
+            status_code=422,
+            detail="Add a Google Sheet URL to this campaign before syncing.",
+        )
+    fetched = sheets.fetch_leads(
+        campaign["sheet_url"],
+        gid=campaign.get("sheet_gid", ""),
+        tab=campaign.get("sheet_tab", ""),
+        mapping=campaign.get("mapping"),
+        suppress=suppressions.all_emails(),
+    )
+    result = outreach.add_leads(campaign_id, fetched["leads"])
+    result["sheet"] = {
+        "headers": fetched.get("headers", []),
+        "total_rows": fetched.get("total_rows", 0),
+        "usable_leads": len(fetched.get("leads", [])),
+        "skipped": fetched.get("skipped", {}),
+    }
+    return result
+
+
+@app.get("/api/outreach/overview")
+def outreach_overview() -> dict[str, Any]:
+    return outreach.overview()
+
+
+@app.get("/api/senders")
+def list_senders() -> dict[str, Any]:
+    return {"senders": _sender_list()}
+
+
+@app.post("/api/senders", status_code=201)
+def add_sender(payload: SenderRequest, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:sender-write", limit=20)
+    return outreach.create_sender(payload.model_dump(exclude_unset=True))
+
+
+@app.put("/api/senders/{sender_id}")
+def edit_sender(sender_id: str, payload: SenderRequest, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:sender-write", limit=20)
+    return outreach.update_sender(sender_id, payload.model_dump(exclude_unset=True))
+
+
+@app.delete("/api/senders/{sender_id}")
+def remove_sender(sender_id: str, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:sender-write", limit=20)
+    return outreach.delete_sender(sender_id)
+
+
+@app.post("/api/senders/{sender_id}/test")
+def test_sender(sender_id: str, payload: SenderTestRequest, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:sender-test", limit=20)
+    account = outreach.get_sender_account(sender_id)
+    recipient = payload.recipient.strip()
+    if recipient:
+        if not is_valid_format(recipient) or is_blocked_domain(recipient):
+            raise HTTPException(status_code=422, detail="Enter a valid test recipient address.")
+        html = wrap_in_html(
+            "This is a test message from your Email Automation sender account.\n\n"
+            f"SMTP host: {account.get('host')}:{account.get('port')}\n"
+            f"From: {account.get('email')}",
+            account.get("name") or config.SENDER_NAME,
+        )
+        sent, error, _ = send_account_email(
+            account,
+            recipient,
+            f"SMTP test from {account.get('email')}",
+            html,
+            "This is a test message from your Email Automation sender account.",
+        )
+        return {
+            "ok": sent,
+            "message": (
+                f"Test email sent to {recipient}."
+                if sent
+                else f"Test email failed: {error}"
+            ),
+        }
+    ok, message = test_account(account)
+    return {"ok": ok, "message": message}
+
+
+@app.get("/api/senders/{sender_id}/deliverability")
+def sender_deliverability(
+    sender_id: str, request: Request, refresh: bool = False
+) -> dict[str, Any]:
+    enforce_rate_limit(request, "deliverability:check", limit=30, window_seconds=60)
+    account = outreach.get_sender_account(sender_id)
+    domain = (account.get("email") or "").rsplit("@", 1)[-1].lower()
+    if not domain:
+        raise HTTPException(status_code=422, detail="Sender account has no domain.")
+    provider = account.get("provider") or "smtp"
+    result = check_domain(
+        domain,
+        provider,
+        refresh=refresh,
+        dkim_selector=account.get("dkim_selector", ""),
+    )
+    # Show the records this specific sending domain should publish, using the
+    # sender's own SPF include, DKIM selector, and DMARC policy.
+    result["setup"] = recommended_records(
+        domain,
+        provider,
+        dkim_selector=account.get("dkim_selector", ""),
+        spf_include=account.get("spf_include", ""),
+        dmarc_policy=account.get("dmarc_policy", ""),
+    )
+    result["sender_id"] = sender_id
+    result["sender_email"] = account.get("email", "")
+    return result
+
+
+@app.get("/api/brands")
+def list_brands() -> dict[str, Any]:
+    state = outreach.load_state()
+    return {"brands": state["brands"]}
+
+
+@app.post("/api/brands", status_code=201)
+def add_brand(payload: BrandRequest, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:brand-write", limit=30)
+    return outreach.create_brand(payload.model_dump(exclude_unset=True))
+
+
+@app.put("/api/brands/{brand_id}")
+def edit_brand(brand_id: str, payload: BrandRequest, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:brand-write", limit=30)
+    return outreach.update_brand(brand_id, payload.model_dump(exclude_unset=True))
+
+
+@app.delete("/api/brands/{brand_id}")
+def remove_brand(brand_id: str, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:brand-write", limit=30)
+    return outreach.delete_brand(brand_id)
+
+
+@app.get("/api/templates")
+def list_templates() -> dict[str, Any]:
+    state = outreach.load_state()
+    brands = {brand["id"]: brand.get("name", "") for brand in state["brands"]}
+    templates = []
+    for template in state["templates"]:
+        view = dict(template)
+        view["brand_name"] = brands.get(template.get("brand_id", ""), "")
+        templates.append(view)
+    return {"templates": templates}
+
+
+@app.post("/api/templates", status_code=201)
+def add_template(payload: TemplateRequest, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:template-write", limit=30)
+    return outreach.create_template(payload.model_dump(exclude_unset=True))
+
+
+@app.put("/api/templates/{template_id}")
+def edit_template(
+    template_id: str, payload: TemplateRequest, request: Request
+) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:template-write", limit=30)
+    return outreach.update_template(template_id, payload.model_dump(exclude_unset=True))
+
+
+@app.delete("/api/templates/{template_id}")
+def remove_template(template_id: str, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:template-write", limit=30)
+    return outreach.delete_template(template_id)
+
+
+@app.get("/api/campaigns")
+def list_campaigns() -> dict[str, Any]:
+    return {"campaigns": outreach.list_campaigns()}
+
+
+@app.post("/api/campaigns", status_code=201)
+def add_campaign(payload: CampaignRequest, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:campaign-write", limit=30)
+    return outreach.create_campaign(payload.model_dump(exclude_unset=True))
+
+
+@app.get("/api/campaigns/{campaign_id}")
+def get_campaign(campaign_id: str, limit: int = 100) -> dict[str, Any]:
+    return outreach.campaign_report(campaign_id, limit=limit)
+
+
+@app.put("/api/campaigns/{campaign_id}")
+def edit_campaign(
+    campaign_id: str, payload: CampaignRequest, request: Request
+) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:campaign-write", limit=30)
+    return outreach.update_campaign(campaign_id, payload.model_dump(exclude_unset=True))
+
+
+@app.delete("/api/campaigns/{campaign_id}")
+def remove_campaign(campaign_id: str, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:campaign-write", limit=30)
+    return outreach.delete_campaign(campaign_id)
+
+
+@app.post("/api/campaigns/{campaign_id}/start")
+def start_campaign(campaign_id: str, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:campaign-action", limit=30)
+    campaign = outreach.get_campaign(campaign_id)
+    if campaign["stats"]["total"] == 0 and campaign.get("sheet_url"):
+        _sync_campaign_from_sheet(campaign_id)
+    return outreach.start_campaign(campaign_id)
+
+
+@app.post("/api/campaigns/{campaign_id}/pause")
+def pause_campaign(campaign_id: str, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:campaign-action", limit=30)
+    return outreach.pause_campaign(campaign_id)
+
+
+@app.post("/api/campaigns/{campaign_id}/requeue")
+def requeue_campaign(campaign_id: str, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:campaign-action", limit=30)
+    return outreach.requeue(campaign_id)
+
+
+@app.post("/api/campaigns/{campaign_id}/sync")
+def sync_campaign(campaign_id: str, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:sync", limit=10, window_seconds=300)
+    return _sync_campaign_from_sheet(campaign_id)
+
+
+@app.get("/api/campaigns/{campaign_id}/recipients")
+def campaign_recipients(
+    campaign_id: str, status: str = "", limit: int = 100
+) -> dict[str, Any]:
+    report = outreach.campaign_report(campaign_id, limit=500)
+    recipients = report["recipients"]
+    if status:
+        recipients = [
+            recipient for recipient in recipients if recipient.get("status") == status
+        ]
+    return {
+        "recipients": recipients[: max(1, min(500, limit))],
+        "counts": report["counts"],
+        "deliverability": report["deliverability"],
+    }
+
+
+@app.post("/api/campaigns/{campaign_id}/recipients/{recipient_id}/status")
+def set_recipient_status(
+    campaign_id: str,
+    recipient_id: str,
+    payload: RecipientStatusRequest,
+    request: Request,
+) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:recipient-status", limit=60)
+    return outreach.mark_recipient(recipient_id, payload.status.strip().lower())
+
+
+@app.post("/api/sheets/preview")
+def preview_sheet(payload: SheetPreviewRequest, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:sheet-preview", limit=20, window_seconds=300)
+    return sheets.preview_sheet(
+        payload.sheet_url,
+        gid=payload.gid,
+        tab=payload.tab,
+        mapping=payload.mapping or None,
+    )
+
+
+@app.get("/api/queue/tick")
+@app.post("/api/queue/tick")
+def queue_tick(request: Request) -> dict[str, Any]:
+    if (
+        config.auth_enabled()
+        and not _scheduler_authorized(request)
+        and not _session_email(request)
+    ):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return outreach.process_queue(max_sends=config.QUEUE_MAX_PER_TICK)
+
+
+@app.post("/api/outreach/webhook")
+def outreach_webhook(
+    payload: OutreachWebhookRequest, request: Request
+) -> dict[str, Any]:
+    if not _scheduler_authorized(request):
+        raise HTTPException(status_code=401, detail="Invalid webhook secret.")
+    return outreach.mark_by_email(
+        payload.email, payload.status.strip().lower(), payload.campaign_id.strip()
+    )
+
+
+@app.on_event("startup")
+def _start_outreach_worker() -> None:
+    # Runs once per process at ASGI startup, not per request. start_worker()
+    # audits credentials first (read-only, so a legacy-key warning still appears
+    # where QUEUE_WORKER_ENABLED is false) and only then guards the in-process
+    # queue, so a Vercel deploy without DATABASE_URL degrades to "worker
+    # disabled" instead of failing every route; cron ticks are guarded in
+    # outreach.process_queue().
+    outreach.start_worker()
+
+
+@app.on_event("shutdown")
+def _stop_outreach_worker() -> None:
+    outreach.stop_worker()
