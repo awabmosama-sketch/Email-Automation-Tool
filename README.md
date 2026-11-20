@@ -35,6 +35,8 @@ email-automation/
 
 Runtime dependencies live in `requirements.txt`; test-only dependencies (pytest, httpx) live in `requirements-dev.txt`.
 
+Run `ruff check backend` before committing; `pytest tests -q` runs the suite.
+
 Use the existing virtual environment or create one:
 
 ```powershell
@@ -50,6 +52,22 @@ Copy-Item .env.example .env
 ```
 
 The default provider is Groq. To use Anthropic instead, set `LLM_PROVIDER=anthropic` and provide `ANTHROPIC_API_KEY` plus an optional `ANTHROPIC_MODEL`.
+
+### Running locally
+
+Start the server from the project root:
+
+```bash
+venv/Scripts/python.exe -u -m uvicorn main:app --host 127.0.0.1 --port 8000 --log-level info > .local-data/uvicorn.log 2>&1
+```
+
+Error-response references (e.g. "Reference: cfcdcf06") correspond to traceback entries in `.local-data/uvicorn.log`.
+
+For local iteration, add `--reload`:
+
+```bash
+venv/Scripts/python.exe -u -m uvicorn main:app --host 127.0.0.1 --port 8000 --log-level info --reload
+```
 
 ## Email Sending (SMTP)
 

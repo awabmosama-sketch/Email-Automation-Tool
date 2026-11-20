@@ -1,0 +1,4 @@
+[tool.ruff.lint]
+# Pyflakes rules catch undefined names (F821) and the rest of F, including the
+# class of bug behind the LEAD_LABELS preview 500.
+select = ["F"]
