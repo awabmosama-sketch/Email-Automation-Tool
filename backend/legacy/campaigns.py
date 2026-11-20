@@ -9,9 +9,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import automation_store as store
 from .. import config, sheets
-from . import scheduling, templating
+from . import scheduling
 from .senders import get_sender, public_sender
-from ..verifier import is_valid_format
 
 CAMPAIGN_STATUSES = ("draft", "running", "paused", "completed")
 TEMPLATE_TYPES = ("static", "ai")

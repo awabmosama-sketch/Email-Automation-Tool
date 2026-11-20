@@ -11,7 +11,6 @@ from typing import Any
 import httpx
 
 from . import automation_store as store
-from .. import config
 from .. import credential_crypto
 from .. import deliverability
 from ..sender import send_with_settings
@@ -137,7 +136,6 @@ def normalize_sender(
     provider = _provider(_clean(pick("provider", "custom")))
     old_provider = _provider(_clean(existing.get("provider", provider)))
     defaults = _defaults(provider)
-    old_defaults = _defaults(old_provider)
 
     host_provided = "smtp_host" in payload and payload.get("smtp_host") is not None
     imap_provided = "imap_host" in payload and payload.get("imap_host") is not None

@@ -3,7 +3,6 @@ import os
 import threading
 from typing import Any, Callable
 
-import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool

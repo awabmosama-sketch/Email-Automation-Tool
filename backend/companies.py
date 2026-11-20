@@ -1,6 +1,5 @@
 import json
 import logging
-from pathlib import Path
 from . import config
 from . import database
 
