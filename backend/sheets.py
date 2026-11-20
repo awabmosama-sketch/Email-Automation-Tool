@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -29,8 +30,10 @@ import httpx
 from . import config
 from .verifier import is_blocked_domain, is_valid_format
 
+logger = logging.getLogger(__name__)
+
 LEAD_FIELDS = ("first_name", "position", "company_name", "personal_email", "business_email")
-LEAD_LABELS = {
+LEAD_FIELD_LABELS = {
     "first_name": "First Name",
     "position": "Position / Job Title",
     "company_name": "Company Name",
@@ -131,8 +134,6 @@ def parse_sheet_url(raw: str) -> tuple[str, str]:
             gid = hash_match.group(1)
         return spreadsheet_id, gid
 
-    if "docs.google.com" in raw:
-        raise SheetError("Could not read the spreadsheet ID from that Google Sheets URL.")
     if SHEET_ID_PATTERN.fullmatch(raw):
         return raw, gid
     raise SheetError("Paste a Google Sheets URL that contains /spreadsheets/d/<id>.")
@@ -159,6 +160,159 @@ def _service_account_info() -> dict[str, Any] | None:
     return None
 
 
+def _sheet_info(
+    spreadsheet_id: str,
+    gid: str,
+    sheet_tab: str,
+    *,
+    use_service_account: bool,
+    bearer_token: str,
+) -> dict[str, Any]:
+    """Fetches a sheet and returns rows plus the tab resolution used.
+
+    Logs the exact URL the client was asked to read. When a specific gid or
+    tab was requested and the service answers HTTP 400, the call fails loudly
+    instead of silently reading the first sheet.
+    """
+    resolved_tab: str | None = None
+    tab_list: list[str] = []
+    if sheet_tab:
+        # For a requested tab we must confirm it exists before we trust any
+        # rows the server returns. Google's gviz endpoint returns HTTP 200 and
+        # the *first* sheet's data for a tab name that does not exist, which is
+        # the exact silent-wrong-sheet bug this block is here to kill.
+        #
+        # spreadsheets.get is the only reliable check. It works for the
+        # service-account path; for the public path it 401/403s when no
+        # credentials are configured, and in that case we cannot confirm the
+        # tab and must ask the operator to configure the service account (or
+        # switch to the gid path) instead of silently reading the wrong sheet.
+        list_url = (
+            f"https://sheets.googleapis.com/v4/spreadsheets/{quote(spreadsheet_id)}"
+        )
+        list_auth = "" if not use_service_account else f"Bearer {bearer_token}"
+        try:
+            list_response = httpx.get(
+                list_url,
+                headers=(
+                    {"Authorization": list_auth} if list_auth else {}
+                ),
+                params={"fields": "sheets.properties.title"},
+                timeout=30,
+                follow_redirects=True,
+            )
+        except httpx.HTTPError:
+            list_response = None
+
+        if list_response and list_response.status_code == 200:
+            try:
+                tab_list = [
+                    sheet["properties"]["title"]
+                    for sheet in list_response.json().get("sheets", [])
+                ]
+            except ValueError:
+                tab_list = []
+
+        if tab_list and sheet_tab in tab_list:
+            resolved_tab = sheet_tab
+        elif tab_list:
+            # Tab name was supplied but spreadsheets.get shows it does not exist.
+            # gviz would return HTTP 200 and the *first* sheet's rows for this
+            # request, which is the silent-wrong-sheet bug this raises to kill.
+            raise SheetError(
+                f"Tab '{sheet_tab}' was not found in sheet {spreadsheet_id}. "
+                f"Available tabs: {tab_list}. "
+                "Copy the correct tab name from the Sheets UI, or use the sheet gid instead."
+            )
+        else:
+            # We could not get a tab list at all (no service account configured on
+            # the public path, or the Sheets API refused the call). We must not guess
+            # and silently return the first sheet, so raise and point at the gid path,
+            # which does not need tab metadata.
+            raise SheetError(
+                f"Google could not confirm that tab '{sheet_tab}' exists in sheet {spreadsheet_id}. "
+                "The tab-name path needs the sheet shared with a Google service account "
+                "(configure GOOGLE_SERVICE_ACCOUNT_JSON and share the sheet with its client_email), "
+                "or use the sheet gid instead, which works for publicly shared sheets."
+            )
+
+    if not sheet_tab:
+        resolved_tab = "first sheet"
+
+    if gid:
+        suffix = f"&gid={quote(gid, safe='')}"
+    else:
+        suffix = ""
+
+    if sheet_tab:
+        url = (
+            f"https://docs.google.com/spreadsheets/d/{quote(spreadsheet_id)}/gviz/tq"
+            f"?tqx=out:csv&sheet={quote(sheet_tab)}"
+        )
+    else:
+        url = f"https://docs.google.com/spreadsheets/d/{quote(spreadsheet_id)}/export?format=csv{suffix}"
+
+    logger.info(
+        "fetch_sheet",
+        extra={
+            "spreadsheet_id": spreadsheet_id,
+            "gid": gid or "(first sheet)",
+            "tab": resolved_tab,
+            "request_url": url,
+            "source": "service_account" if use_service_account else "public_csv",
+        },
+    )
+    try:
+        response = httpx.get(url, timeout=30, follow_redirects=True)
+    except httpx.HTTPError as error:
+        raise SheetError(f"Could not download the sheet: {error}") from error
+
+    if response.status_code in {401, 403}:
+        raise SheetError(
+            "Google refused the download. Either share the sheet as 'Anyone with the link', "
+            "or configure a Google service account for private sheets."
+        )
+    if response.status_code >= 400:
+        if gid:
+            raise SheetError(
+                f"Tab with gid={gid} was not found in sheet {spreadsheet_id}. "
+                "Click the correct tab, copy the number after #gid= in the URL, "
+                "or clear the gid to use the first tab."
+            )
+        if sheet_tab:
+            raise SheetError(
+                f"Google Sheets API returned HTTP {response.status_code} while reading "
+                f"tab '{sheet_tab}' in sheet {spreadsheet_id}. "
+                f"Available tabs: {tab_list or 'unknown'}. "
+                "Copy the correct tab name from the Sheets UI."
+            )
+        raise SheetError(
+            f"Google returned HTTP {response.status_code} while downloading the sheet. "
+            "Check that the sheet is shared as 'Anyone with the link' and that the "
+            "sheet tab / gid still exists."
+        )
+    if len(response.content) > MAX_SHEET_BYTES:
+        raise SheetError("The sheet is too large to import (limit: 8 MB of CSV).")
+
+    text = response.text
+    head = text[:500].lower()
+    if "<html" in head and ("sign in" in head or "google accounts" in head):
+        raise SheetError(
+            "That sheet is not public. Share it as 'Anyone with the link', or configure "
+            "a Google service account for private sheets."
+        )
+
+    try:
+        return {
+            "values": [row for row in csv.reader(io.StringIO(text))],
+            "request_url": url,
+            "used_tab": resolved_tab or "first sheet",
+            "tab_exists": True,
+        }
+    except csv.Error as error:
+        raise SheetError(f"Could not parse the sheet as CSV: {error}") from error
+
+
 def _fetch_with_service_account(spreadsheet_id: str, sheet_tab: str) -> list[list[str]]:
     info = _service_account_info()
     if not info:
@@ -180,78 +334,23 @@ def _fetch_with_service_account(spreadsheet_id: str, sheet_tab: str) -> list[lis
     except Exception as error:
         raise SheetError(f"Google service account authentication failed: {error}") from error
 
-    if sheet_tab:
-        escaped_tab = sheet_tab.replace("'", "''")
-        range_name = f"'{escaped_tab}'!A:Z"
-    else:
-        range_name = "A:Z"
-    url = (
-        f"https://sheets.googleapis.com/v4/spreadsheets/{quote(spreadsheet_id)}"
-        f"/values/{quote(range_name, safe='')}"
-    )
-    try:
-        response = httpx.get(
-            url,
-            headers={"Authorization": f"Bearer {credentials.token}"},
-            params={"majorDimension": "ROWS", "valueRenderOption": "UNFORMATTED_VALUE"},
-            timeout=30,
-            follow_redirects=True,
-        )
-    except httpx.HTTPError as error:
-        raise SheetError(f"Could not reach the Google Sheets API: {error}") from error
-
-    if response.status_code == 403:
-        raise SheetError(
-            "The service account cannot read this sheet. Share the sheet with the "
-            "service account's client_email as a Viewer."
-        )
-    if response.status_code >= 400:
-        raise SheetError(f"Google Sheets API returned HTTP {response.status_code}.")
-    try:
-        values = response.json().get("values", [])
-    except ValueError as error:
-        raise SheetError("Google Sheets API returned an unreadable response.") from error
-    return [[str(cell) if cell is not None else "" for cell in row] for row in values]
+    return [[str(cell) if cell is not None else "" for cell in row] for row in _sheet_info(
+        spreadsheet_id,
+        gid="",
+        sheet_tab=sheet_tab,
+        use_service_account=True,
+        bearer_token=credentials.token,
+    )["values"]]
 
 
 def _fetch_public_csv(spreadsheet_id: str, gid: str, sheet_tab: str) -> list[list[str]]:
-    if sheet_tab:
-        url = (
-            f"https://docs.google.com/spreadsheets/d/{quote(spreadsheet_id)}/gviz/tq"
-            f"?tqx=out:csv&sheet={quote(sheet_tab)}"
-        )
-    else:
-        url = f"https://docs.google.com/spreadsheets/d/{quote(spreadsheet_id)}/export?format=csv"
-        if gid:
-            url += f"&gid={quote(gid)}"
-
-    try:
-        response = httpx.get(url, timeout=30, follow_redirects=True)
-    except httpx.HTTPError as error:
-        raise SheetError(f"Could not download the sheet: {error}") from error
-
-    if response.status_code in {401, 403}:
-        raise SheetError(
-            "Google refused the download. Either share the sheet as 'Anyone with the link', "
-            "or configure a Google service account for private sheets."
-        )
-    if response.status_code >= 400:
-        raise SheetError(f"Google returned HTTP {response.status_code} while downloading the sheet.")
-    if len(response.content) > MAX_SHEET_BYTES:
-        raise SheetError("The sheet is too large to import (limit: 8 MB of CSV).")
-
-    text = response.text
-    head = text[:500].lower()
-    if "<html" in head and ("sign in" in head or "google accounts" in head):
-        raise SheetError(
-            "That sheet is not public. Share it as 'Anyone with the link', or configure "
-            "a Google service account for private sheets."
-        )
-
-    try:
-        return [row for row in csv.reader(io.StringIO(text))]
-    except csv.Error as error:
-        raise SheetError(f"Could not parse the sheet as CSV: {error}") from error
+    return _sheet_info(
+        spreadsheet_id,
+        gid=gid,
+        sheet_tab=sheet_tab,
+        use_service_account=False,
+        bearer_token="",
+    )["values"]
 
 
 def fetch_table(
@@ -260,23 +359,33 @@ def fetch_table(
     has_header: bool = True,
     gid: str = "",
 ) -> dict[str, Any]:
-    """Downloads a sheet and returns headers + raw rows."""
+    """Downloads a sheet and returns headers + raw rows plus tab resolution."""
     spreadsheet_id, parsed_gid = parse_sheet_url(sheet_url)
     gid = (gid or parsed_gid or "").strip()
     service_account = _service_account_info() is not None
     source = "service_account" if service_account else "public_csv"
+    bearer_token = ""
+    if service_account:
+        info = _service_account_info()
+        if info:
+            from google.oauth2 import service_account
+
+            bearer_token = info.get("client_email")
 
     try:
-        values = (
-            _fetch_with_service_account(spreadsheet_id, sheet_tab)
-            if service_account
-            else _fetch_public_csv(spreadsheet_id, gid, sheet_tab)
+        info = _sheet_info(
+            spreadsheet_id,
+            gid=gid,
+            sheet_tab=sheet_tab,
+            use_service_account=service_account,
+            bearer_token=bearer_token or "",
         )
     except SheetError:
         raise
     except Exception as error:
         raise SheetError(f"Could not read the sheet: {error}") from error
 
+    values = info["values"]
     rows = [[str(cell or "").strip() for cell in row] for row in values]
     rows = [row for row in rows if any(cell for cell in row)]
 
@@ -297,6 +406,9 @@ def fetch_table(
             "gid": gid,
             "has_header": has_header,
             "warnings": ["The sheet is empty."],
+            "used_tab": info.get("used_tab", "first sheet"),
+            "tab_exists": info.get("tab_exists", True),
+            "request_url": info.get("request_url", ""),
         }
 
     if has_header:
@@ -320,6 +432,9 @@ def fetch_table(
         "gid": gid,
         "has_header": has_header,
         "warnings": warnings,
+        "used_tab": info.get("used_tab", "first sheet"),
+        "tab_exists": info.get("tab_exists", True),
+        "request_url": info.get("request_url", ""),
     }
 
 
@@ -412,7 +527,7 @@ def extract_leads(
         mapped_header = (column_map or {}).get(field) or ""
         index = _resolve_index(headers, mapped_header) if mapped_header else None
         if mapped_header and index is None:
-            warnings.append(f"Column '{mapped_header}' was not found; {LEAD_LABELS[field]} will be blank.")
+            warnings.append(f"Column '{mapped_header}' was not found; {LEAD_FIELD_LABELS[field]} will be blank.")
         indexes[field] = index
 
     if indexes.get("business_email") is None and indexes.get("personal_email") is None:
@@ -556,6 +671,16 @@ def _effective_mapping(
     return merged
 
 
+def _column_label_map(headers: list[str]) -> dict[str, str]:
+    """Maps the five target fields to their best sheet column name."""
+    mapping = auto_map_headers(headers)
+    for field in LEAD_FIELDS:
+        label = LEAD_FIELD_LABELS[field]
+        if label in headers:
+            mapping[field] = label
+    return mapping
+
+
 def fetch_leads(
     sheet_url: str,
     gid: str = "",
@@ -605,7 +730,83 @@ def fetch_leads(
         "source": table.get("source", ""),
         "spreadsheet_id": table.get("spreadsheet_id", ""),
         "gid": table.get("gid", ""),
+        "used_tab": table.get("used_tab", "first sheet"),
+        "tab_exists": table.get("tab_exists", True),
+        "request_url": table.get("request_url", ""),
     }
+
+
+TARGET_FIELDS = ("first_name", "position", "company_name", "personal_email", "business_email")
+
+LEAD_FIELD_LABELS = {
+    "first_name": "First Name",
+    "position": "Position / Job Title",
+    "company_name": "Company Name",
+    "personal_email": "Personal Email",
+    "business_email": "Business Email",
+}
+
+
+def _map_indicator(headers: list[str]) -> dict[str, dict[str, Any]]:
+    """Per-target-field presence marker for the preview UI.
+
+    Every target field gets a green ``found`` marker for a matching column and
+    a grey ``missing`` marker otherwise. Targets are matched by alias, and
+    phone-like columns are never mapped.
+    """
+    normalized = {normalize_header(header): header for header in headers}
+    result: dict[str, dict[str, Any]] = {}
+    for field in TARGET_FIELDS:
+        labels = LEAD_FIELD_LABELS[field]
+        key = normalize_header(labels)
+        found = key in normalized
+        def _matched(
+            candidate_key: str,
+            prefixes: tuple[str, ...],
+        ) -> bool:
+            return candidate_key in normalized and any(
+                normalize_header(p) in candidate_key for p in prefixes
+            )
+        if not found:
+            for alias in _HEADER_ALIASES[field]:
+                if _matched(alias, ("first", "name")):
+                    found = True
+                    break
+        result[field] = {
+            "label": labels,
+            "found": found,
+            "missing": not found,
+        }
+    return result
+
+
+def _extract_preview_fields(headers: list[str], column_map: dict[str, str]) -> dict[str, str]:
+    """Returns the value of each of the five target fields for one row."""
+    indexes: dict[str, int | None] = {}
+    for field in TARGET_FIELDS:
+        mapped = (column_map or {}).get(field) or ""
+        indexes[field] = _resolve_index(headers, mapped) if mapped else None
+
+    def cell(field: str) -> str:
+        index = indexes[field]
+        if index is None or index >= len(headers):
+            return ""
+        return str(headers[index]) if index < len(headers) else ""
+
+    return {field: cell(field) for field in TARGET_FIELDS}
+
+
+def _field_found(headers: list[str], field: str, column_map: dict[str, str] | None) -> bool:
+    """True when `field` already has a mapped column or an auto-detected alias."""
+    mapped = (column_map or {}).get(field) or ""
+    if mapped and _resolve_index(headers, mapped) is not None:
+        return True
+    return field in auto_map_headers(headers)
+
+
+def _map_missing_field(headers: list[str], field: str) -> dict[str, str]:
+    """One entry for a target field that the sheet does not provide."""
+    return {"field": field, "label": LEAD_FIELD_LABELS[field]}
 
 
 def preview_sheet(
@@ -614,29 +815,62 @@ def preview_sheet(
     tab: str = "",
     mapping: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Returns a small preview used by the campaign builder UI."""
+    """Returns a small preview used by the campaign builder UI.
+
+    The payload now carries tab resolution, the exact request URL used for the
+    fetch, and the per-field mapping indicator. A request that used a specific
+    tab or gid and 400ed is raised loudly instead of falling back silently.
+    """
     table = fetch_table(sheet_url, sheet_tab=tab, gid=gid)
-    column_map = _effective_mapping(table["headers"], mapping)
-    extracted = extract_leads(table, column_map)
+    headers = table.get("headers", [])
+    column_map = _effective_mapping(headers, mapping)
+    warnings = list(table.get("warnings") or [])
+
+    # A preview must stay readable even when the sheet is missing the email
+    # columns that extract_leads() would reject. Surface the same "missing
+    # column" warnings a real extraction would produce, but do not error out.
+    extracted_warnings: list[str] = []
+    sample: list[dict[str, Any]] = []
+    total_rows = table.get("data_rows", []) and len(table.get("data_rows", [])) or 0
+    try:
+        extracted = extract_leads(table, column_map)
+        extracted_warnings = list(extracted.get("warnings") or [])
+        sample = extracted["leads"][:8]
+    except SheetError as error:
+        extracted_warnings.append(str(error))
+
+    warnings.extend(extracted_warnings)
+
     return {
-        "headers": table.get("headers", []),
-        "suggested_map": auto_map_headers(table.get("headers", [])),
+        "headers": headers,
+        "used_tab": table.get("used_tab", "first sheet"),
+        "tab_exists": table.get("tab_exists", True),
+        "request_url": table.get("request_url", ""),
+        "suggested_map": auto_map_headers(headers),
         "column_map": column_map,
-        "sample": extracted["leads"][:8],
-        "total_rows": extracted.get("total_rows", 0),
-        "usable_leads": len(extracted["leads"]),
-        "skipped": extracted["skipped"][:8],
-        "duplicates": extracted.get("duplicates", 0),
-        "warnings": extracted.get("warnings", []),
         "source": table.get("source", ""),
         "spreadsheet_id": table.get("spreadsheet_id", ""),
         "gid": table.get("gid", ""),
+        "missing_fields": [_map_missing_field(headers, field)
+                           for field in TARGET_FIELDS
+                           if not _field_found(headers, field, column_map)],
+        "field_map": _map_indicator(headers),
+        "mapping": {
+            **auto_map_headers(headers),
+            **(_effective_mapping(headers, mapping) or {}),
+        },
+        "sample": sample,
+        "total_rows": total_rows,
+        "usable_leads": len(sample),
+        "skipped": [],
+        "duplicates": 0,
+        "warnings": warnings,
     }
 
 
 __all__ = [
     "LEAD_FIELDS",
-    "LEAD_LABELS",
+    "LEAD_FIELD_LABELS",
     "PHONE_HEADER_PATTERN",
     "SheetError",
     "SheetsError",
