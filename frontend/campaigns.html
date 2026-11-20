@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="icon" type="image/svg+xml" href="/frontend/favicon.svg">
   <link rel="stylesheet" href="/frontend/styles.css?v=20261120-logo-static">
-  <link rel="stylesheet" href="/frontend/campaigns.css?v=20261120-logo-static">
+  <link rel="stylesheet" href="/frontend/campaigns.css?v=20261121-limits">
 </head>
 <body>
   <div class="page console-page">
@@ -157,13 +157,33 @@
         <div id="template-list" class="card-list"></div>
       </section>
 
-      <!-- SETTINGS (read-only display) -->
+      <!-- SETTINGS -->
       <section id="page-settings" class="tab-panel hidden" role="tabpanel">
         <div class="console-toolbar">
           <div>
             <h2>Settings</h2>
-            <p class="muted small">Global defaults and session status. Read-only.</p>
+            <p class="muted small">Global campaign limits and session status.</p>
           </div>
+        </div>
+        <div class="card settings-limits">
+          <form id="settings-limits-form">
+            <div class="limits-head">
+              <div>
+                <h3>Sending limits</h3>
+                <p class="muted small">One ceiling for every running campaign. A campaign's own caps still apply when they are lower. The daily window resets at 00:00 UTC.</p>
+              </div>
+              <button type="submit" id="save-limits-button" class="btn btn-primary btn-sm">Save limits</button>
+            </div>
+            <div class="grid grid-2">
+              <label>Emails per hour <span class="req">*</span>
+                <input id="limit-hourly" type="number" min="1" max="100" step="1" required>
+              </label>
+              <label>Emails per day <span class="req">*</span>
+                <input id="limit-daily" type="number" min="1" max="500" step="1" required>
+              </label>
+            </div>
+            <p id="limits-usage" class="muted small">Loading usage…</p>
+          </form>
         </div>
         <div class="card settings-summary">
           <div id="settings-status" class="entity-meta">
@@ -603,6 +623,6 @@
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <!-- Bump ?v= when campaigns.js changes; a build-time hash would remove this manual step. -->
-  <script src="/frontend/campaigns.js?v=20261120"></script>
+  <script src="/frontend/campaigns.js?v=20261121-limits"></script>
 </body>
 </html>

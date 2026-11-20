@@ -115,6 +115,7 @@ def _normalise(state: dict[str, Any]) -> dict[str, Any]:
     for key, default in _EMPTY_STATE.items():
         if not isinstance(state.get(key), list):
             state[key] = copy.deepcopy(default)
+    _sending_limits(state)
     for campaign in state["campaigns"]:
         _campaign_defaults(campaign)
     return state
@@ -217,6 +218,50 @@ def _float(value: Any, default: float, minimum: float, maximum: float) -> float:
     except (TypeError, ValueError):
         number = default
     return max(minimum, min(maximum, number))
+
+
+def _sending_limits(state: dict[str, Any]) -> dict[str, int]:
+    """Global hourly/daily ceiling shared by every running campaign."""
+    limits = state.get("settings")
+    if not isinstance(limits, dict):
+        limits = {}
+    limits["hourly_limit"] = _int(
+        limits.get("hourly_limit"), config.CAMPAIGN_DEFAULT_HOURLY_LIMIT, 1, 100
+    )
+    limits["daily_limit"] = _int(
+        limits.get("daily_limit"), config.CAMPAIGN_DEFAULT_DAILY_LIMIT, 1, 500
+    )
+    state["settings"] = limits
+    return limits
+
+
+def _sending_usage(state: dict[str, Any], now: datetime | None = None) -> dict[str, int]:
+    """Counts successful campaign sends in the rolling hour and the UTC day."""
+    moment = now or _now()
+    stamps = [
+        _parse_dt(recipient.get("sent_at"))
+        for recipient in state["recipients"]
+        if recipient.get("status") in SENT_STATUSES
+    ]
+    stamps = [stamp for stamp in stamps if stamp]
+    return {
+        "sent_last_hour": sum(1 for stamp in stamps if stamp > moment - timedelta(hours=1)),
+        "sent_today": sum(1 for stamp in stamps if stamp.date() == moment.date()),
+    }
+
+
+def update_limits(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persists the global campaign sending limits."""
+
+    def mutator(state: dict[str, Any]) -> dict[str, Any]:
+        limits = _sending_limits(state)
+        if "hourly_limit" in payload and payload.get("hourly_limit") is not None:
+            limits["hourly_limit"] = _int(payload["hourly_limit"], limits["hourly_limit"], 1, 100)
+        if "daily_limit" in payload and payload.get("daily_limit") is not None:
+            limits["daily_limit"] = _int(payload["daily_limit"], limits["daily_limit"], 1, 500)
+        return {"limits": dict(limits), "usage": _sending_usage(state)}
+
+    return _mutate(mutator)
 
 
 def _repair_fabricated_gid(campaign: dict[str, Any]) -> None:
@@ -601,7 +646,17 @@ def claim_due(per_campaign: int = 1) -> list[dict[str, Any]]:
 
     def mutator(state: dict[str, Any]) -> list[dict[str, Any]]:
         claims: list[dict[str, Any]] = []
+        limits = _sending_limits(state)
+        usage = _sending_usage(state, now)
+        remaining = min(
+            limits["hourly_limit"] - usage["sent_last_hour"],
+            limits["daily_limit"] - usage["sent_today"],
+        )
+        if remaining <= 0:
+            return claims
         for campaign in state["campaigns"]:
+            if len(claims) >= remaining:
+                break
             if campaign.get("status") != "running":
                 continue
             if not _within_working_hours(campaign, now):
@@ -705,7 +760,7 @@ def claim_due(per_campaign: int = 1) -> list[dict[str, Any]]:
                 due[0]["scheduled_at"] = _iso(now)
 
             for _ in range(per_campaign):
-                if not due:
+                if not due or len(claims) >= remaining:
                     break
                 recipient = due.pop(0)
                 recipient["status"] = "sending"
@@ -1655,6 +1710,8 @@ def overview() -> dict[str, Any]:
             "bounce_rate": round(counts["bounced"] / attempted * 100, 1) if attempted else 0.0,
             "spam_rate": round(counts["spam_alert"] / attempted * 100, 1) if attempted else 0.0,
         },
+        "limits": dict(_sending_limits(state)),
+        "limits_usage": _sending_usage(state, now),
         "senders": [public_sender(sender) for sender in state["senders"]],
         "brands": state["brands"],
         "templates": state["templates"],

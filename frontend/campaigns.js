@@ -52,6 +52,7 @@ const state = {
   senders: [],
   brands: [],
   totals: {},
+  limits: {},
   tab: "campaigns",
   editing: { campaign: null, template: null, sender: null, brand: null },
   mapping: {},
@@ -226,6 +227,24 @@ function renderOverview(data) {
   if (settingsWorker) settingsWorker.textContent = data.queue_worker ? "active" : "cron mode";
   const settingsSmtp = $("settings-smtp");
   if (settingsSmtp) settingsSmtp.textContent = "default (.env)";
+
+  const limits = data.limits || {};
+  state.limits = limits;
+  const hourlyInput = $("limit-hourly");
+  const dailyInput = $("limit-daily");
+  if (hourlyInput && limits.hourly_limit != null) {
+    hourlyInput.value = limits.hourly_limit;
+  }
+  if (dailyInput && limits.daily_limit != null) {
+    dailyInput.value = limits.daily_limit;
+  }
+  const usage = data.limits_usage || {};
+  const usageLine = $("limits-usage");
+  if (usageLine) {
+    usageLine.textContent =
+      `Last hour: ${Number(usage.sent_last_hour || 0)} / ${limits.hourly_limit ?? "—"} · ` +
+      `Today (UTC): ${Number(usage.sent_today || 0)} / ${limits.daily_limit ?? "—"}`;
+  }
 
   const worker = $("worker-dot");
   const workerText = $("worker-text");
@@ -1466,6 +1485,33 @@ $("logout-button").addEventListener("click", async () => {
   }
   window.location.assign("/login");
 });
+
+const limitsForm = $("settings-limits-form");
+if (limitsForm) {
+  limitsForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const hourly = Number($("limit-hourly").value);
+    const daily = Number($("limit-daily").value);
+    if (!Number.isInteger(hourly) || hourly < 1 || hourly > 100) {
+      notify("Emails per hour must be a whole number from 1 to 100.", "error");
+      return;
+    }
+    if (!Number.isInteger(daily) || daily < 1 || daily > 500) {
+      notify("Emails per day must be a whole number from 1 to 500.", "error");
+      return;
+    }
+    await withBusy($("save-limits-button"), "Saving…", async () => {
+      const result = await api("/api/outreach/limits", {
+        method: "PUT",
+        body: JSON.stringify({ hourly_limit: hourly, daily_limit: daily }),
+      });
+      notify(
+        `Limits saved: ${result.limits.hourly_limit}/hr · ${result.limits.daily_limit}/day.`
+      );
+      await loadOverview();
+    });
+  });
+}
 
 async function initAuth() {
   try {

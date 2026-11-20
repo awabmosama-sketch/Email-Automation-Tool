@@ -390,8 +390,13 @@ label > textarea { width: 100%; }
 .dns-tips li { margin-bottom: 3px; }
 
 .brands-toolbar { margin-top: 24px; }
-.settings-summary { padding: 16px; }
+.settings-summary { padding: 16px; margin-top: 16px; }
 .campaign-review { flex-direction: column; gap: 6px; }
+
+.settings-limits form { display: grid; gap: 16px; }
+.limits-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.limits-head h3 { margin: 0 0 4px; font-size: 16px; }
+.limits-head p { margin: 0; max-width: 620px; }
 
 @media (max-width: 1080px) {
   .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }

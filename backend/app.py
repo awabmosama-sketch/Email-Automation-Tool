@@ -425,6 +425,11 @@ class CampaignRequest(BaseModel):
     mapping: dict[str, str] = Field(default_factory=dict)
 
 
+class SendingLimitsRequest(BaseModel):
+    hourly_limit: int | None = Field(default=None, ge=1, le=100)
+    daily_limit: int | None = Field(default=None, ge=1, le=500)
+
+
 class SheetPreviewRequest(BaseModel):
     sheet_url: str = Field(default="", max_length=1000)
     gid: str = Field(default="", max_length=20)
@@ -1312,6 +1317,14 @@ def _sync_campaign_from_sheet(campaign_id: str) -> dict[str, Any]:
 @app.get("/api/outreach/overview")
 def outreach_overview() -> dict[str, Any]:
     return outreach.overview()
+
+
+@app.put("/api/outreach/limits")
+def update_sending_limits(
+    payload: SendingLimitsRequest, request: Request
+) -> dict[str, Any]:
+    enforce_rate_limit(request, "outreach:limits", limit=30)
+    return outreach.update_limits(payload.model_dump(exclude_unset=True))
 
 
 @app.get("/api/senders")
