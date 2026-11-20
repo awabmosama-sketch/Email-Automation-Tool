@@ -380,7 +380,7 @@ Template body:
     return {"subject": subject, "body": body}
 
 
-def generate_campaign_email(
+def generate_campaign_email_from_prompt(
     *,
     prompt: str,
     lead: dict,

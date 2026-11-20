@@ -149,7 +149,6 @@ def ensure_next_job(
 
 
 def _reschedule_queued(campaign: dict[str, Any], when: str, reason: str = "") -> int:
-    now = scheduling.iso(scheduling.utc_now())
     moved = 0
     for job in store.query_docs("jobs", equals={"campaign_id": campaign["id"], "status": "queued"}):
         if str(job.get("scheduled_at") or "") < when:
@@ -219,13 +218,14 @@ def _render_email(
     signature = (template.get("signature") or (brand or {}).get("signature") or "").strip()
 
     if template.get("type") == "ai":
-        try:                    from ..llm import generate_campaign_email
+        try:
+            from ..llm import generate_campaign_email_from_prompt
         except ValueError as error:
             raise RuntimeError(f"AI template cannot run: {error}") from error
         prompt = templating.render_template(template.get("prompt", ""), context).strip()
         if not prompt:
             raise RuntimeError("The AI prompt renders to an empty string.")
-        generated = generate_campaign_email(
+        generated = generate_campaign_email_from_prompt(
             prompt=prompt,
             lead=lead,
             brand=brand or {},
