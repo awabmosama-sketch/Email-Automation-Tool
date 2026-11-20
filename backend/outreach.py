@@ -120,21 +120,35 @@ def _normalise(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def _read_state() -> dict[str, Any]:
+def _load_raw_state() -> dict[str, Any]:
     if database.is_configured():
         raw = database.get_meta(STATE_KEY)
         try:
-            return _normalise(json.loads(raw) if raw else {})
+            return json.loads(raw) if raw else {}
         except (TypeError, ValueError):
-            return _normalise({})
+            return {}
     path = config.OUTREACH_FILE
     if not path.exists():
-        return _normalise({})
+        return {}
     try:
-        return _normalise(json.loads(path.read_text(encoding="utf-8")))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         logger.exception("Could not read outreach state from %s", path)
-        return _normalise({})
+        return {}
+
+
+def _read_state() -> dict[str, Any]:
+    return _normalise(_load_raw_state())
+
+
+def _needs_gid_repair(raw: dict[str, Any]) -> bool:
+    campaigns = raw.get("campaigns") if isinstance(raw, dict) else None
+    if not isinstance(campaigns, list):
+        return False
+    return any(
+        isinstance(campaign, dict) and not campaign.get("sheet_gid_repaired")
+        for campaign in campaigns
+    )
 
 
 def _write_state(state: dict[str, Any]) -> None:
@@ -159,7 +173,19 @@ def _mutate(mutator: Callable[[dict[str, Any]], Any]) -> Any:
 
 def load_state() -> dict[str, Any]:
     with _STATE_LOCK:
-        return copy.deepcopy(_read_state())
+        raw = _load_raw_state()
+        # Check before _normalise mutates the document in place and adds the marker.
+        needs_repair = _needs_gid_repair(raw)
+        state = _normalise(raw)
+        if needs_repair:
+            # Persist the one-time gid repair on the read that performs it, so
+            # it survives a restart even if no other write happens. Re-running
+            # is idempotent because the marker is written with the repair.
+            if database.is_configured():
+                database.set_meta(STATE_KEY, json.dumps(state))
+            else:
+                _write_state(state)
+        return copy.deepcopy(state)
 
 
 def _find(items: list[dict], item_id: str) -> dict | None:
@@ -193,11 +219,91 @@ def _float(value: Any, default: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, number))
 
 
+def _repair_fabricated_gid(campaign: dict[str, Any]) -> None:
+    """One-time repair for campaigns saved by an older app version.
+
+    That version prefilled the gid field with "0", so a pasted URL such as
+    ``.../edit?gid=679250682`` was stored with the fabricated 0 and the URL's
+    real gid was never read. Only a stored "0" that was never confirmed by the
+    operator is repaired, and only once per campaign (the marker below): after
+    that, an operator who deliberately sets 0 keeps it. gid 0 itself stays a
+    valid value everywhere -- it is only the *fabricated* 0 that is dropped.
+
+    * URL has an explicit gid -> adopt it (the value the user actually pasted).
+    * URL has no gid -> None, so the first tab is read instead of a 0 that the
+      old form invented and that may not even exist on the sheet.
+    * URL says ``gid=0`` -> 0 was deliberate, keep it.
+    """
+    if campaign.get("sheet_gid_repaired"):
+        return
+    campaign["sheet_gid_repaired"] = True
+    if str(campaign.get("sheet_gid") or "") != "0":
+        return
+    url = str(campaign.get("sheet_url") or "")
+    if not url:
+        return
+    try:
+        from .sheets import parse_sheet_url
+
+        _, url_gid = parse_sheet_url(url)
+    except Exception:
+        return
+    if url_gid and url_gid != "0":
+        logger.info(
+            "Campaign %s: replacing fabricated gid 0 with gid %s from its sheet URL",
+            campaign.get("id", "?"),
+            url_gid,
+        )
+        campaign["sheet_gid"] = url_gid
+    elif not url_gid:
+        logger.info(
+            "Campaign %s: dropping fabricated gid 0 (its sheet URL has no gid); "
+            "the first tab will be used",
+            campaign.get("id", "?"),
+        )
+        campaign["sheet_gid"] = None
+
+
+def _sheet_gid(value: Any) -> str | None:
+    """Normalises a submitted gid: blank means "not set" (None), never 0.
+
+    An explicit 0 is preserved because gid 0 is a real first tab.
+    """
+    text = str(value or "").strip()[:20]
+    return text or None
+
+
+def _resolve_sheet_gid(value: Any, sheet_url: str) -> str | None:
+    """Resolves the gid a campaign targets, at write time.
+
+    A gid typed into the form wins. Otherwise the gid in the pasted URL
+    (``?gid=`` or ``#gid=``) is stored on the campaign, so the record states
+    which tab it targets instead of every read re-parsing the URL. No gid
+    anywhere means None (first tab).
+    """
+    explicit = _sheet_gid(value)
+    if explicit:
+        return explicit
+    url = str(sheet_url or "")
+    if not url:
+        return None
+    try:
+        from .sheets import parse_sheet_url
+
+        _, url_gid = parse_sheet_url(url)
+    except Exception:
+        return None
+    return url_gid or None
+
+
 def _campaign_defaults(campaign: dict[str, Any]) -> dict[str, Any]:
     campaign.setdefault("id", _new_id("cmp"))
     campaign.setdefault("status", "draft")
     campaign.setdefault("sheet_url", "")
-    campaign.setdefault("sheet_gid", "0")
+    # A missing gid means "use whatever the sheet URL points at" (the URL's
+    # ?gid=/#gid= is parsed later). 0 is a real gid, so never invent it here.
+    campaign.setdefault("sheet_gid", None)
+    _repair_fabricated_gid(campaign)
     campaign.setdefault("sheet_tab", "")
     campaign.setdefault("mapping", dict(DEFAULT_MAPPING))
     campaign.setdefault("sender_id", "")
@@ -1355,11 +1461,12 @@ def create_campaign(payload: dict[str, Any]) -> dict[str, Any]:
     if not name:
         raise OutreachError("Campaign name is required.")
     now = _iso()
+    sheet_url = str(payload.get("sheet_url") or "").strip()[:1000]
     campaign = {
         "id": _new_id("cmp"),
         "name": name[:120],
-        "sheet_url": str(payload.get("sheet_url") or "").strip()[:1000],
-        "sheet_gid": str(payload.get("sheet_gid") or "0").strip()[:20] or "0",
+        "sheet_url": sheet_url,
+        "sheet_gid": _resolve_sheet_gid(payload.get("sheet_gid"), sheet_url),
         "sheet_tab": str(payload.get("sheet_tab") or "").strip()[:100],
         "sender_id": str(payload.get("sender_id") or ""),
         "template_id": str(payload.get("template_id") or ""),
@@ -1414,7 +1521,6 @@ def update_campaign(campaign_id: str, payload: dict[str, Any]) -> dict[str, Any]
         for field in (
             "name",
             "sheet_url",
-            "sheet_gid",
             "sheet_tab",
             "sender_id",
             "template_id",
@@ -1425,6 +1531,15 @@ def update_campaign(campaign_id: str, payload: dict[str, Any]) -> dict[str, Any]
         ):
             if field in payload:
                 campaign[field] = str(payload.get(field) or "")[:5000]
+        # Resolve after sheet_url is written so a changed URL is honoured.
+        if "sheet_gid" in payload:
+            campaign["sheet_gid"] = _resolve_sheet_gid(
+                payload.get("sheet_gid"), campaign.get("sheet_url", "")
+            )
+        elif "sheet_url" in payload:
+            campaign["sheet_gid"] = _resolve_sheet_gid(
+                None, campaign.get("sheet_url", "")
+            )
         for field in ("weekdays_only", "use_ai", "auto_complete"):
             if field in payload:
                 campaign[field] = bool(payload.get(field))
@@ -1622,6 +1737,32 @@ def mark_by_email(
 # Queue worker
 # ---------------------------------------------------------------------------
 
+def _audit_sheets_credentials() -> None:
+    """One-time startup sanity check for the Google Sheets import path.
+
+    When a service account is configured the operator can copy its
+    ``client_email`` into the sheet's share dialog; otherwise the app falls
+    back to the public CSV export and the sheet must be shared with
+    "Anyone with the link".
+    """
+    from .sheets import _service_account_info
+
+    info = _service_account_info()
+    if info and info.get("client_email"):
+        logger.info(
+            "Google Sheets: service account configured for private sheets. "
+            "Share the sheet with %s (client_email) and use the sheet URL or tab name in the campaign.",
+            info["client_email"],
+        )
+        return
+    logger.info(
+        "Google Sheets: no service account configured. The app is using the public CSV export path, "
+        "so every imported sheet must be shared as 'Anyone with the link' (View). "
+        "If the sheet contains personal emails, share it with a Google service account instead "
+        "and set GOOGLE_SERVICE_ACCOUNT_JSON (or GOOGLE_SERVICE_ACCOUNT_FILE) — the public CSV path sends PII over the open export URL."
+    )
+
+
 def _worker_loop() -> None:
     logger.info("Outreach queue worker started")
     while not _worker_stop.wait(5):
@@ -1645,6 +1786,7 @@ def start_worker() -> None:
             audit_sender_credentials()
         except Exception:
             logger.exception("Sender credential audit failed; continuing with startup")
+        _audit_sheets_credentials()
     if not config.QUEUE_WORKER_ENABLED or os.getenv("VERCEL"):
         return
     # Only guard a worker that will actually run in-process: a Vercel deploy with

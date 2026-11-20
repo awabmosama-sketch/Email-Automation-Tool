@@ -405,7 +405,7 @@ class TemplateRequest(BaseModel):
 class CampaignRequest(BaseModel):
     name: str = Field(default="", max_length=120)
     sheet_url: str = Field(default="", max_length=1000)
-    sheet_gid: str = Field(default="0", max_length=20)
+    sheet_gid: str = Field(default="", max_length=20)
     sheet_tab: str = Field(default="", max_length=100)
     sender_id: str = Field(default="", max_length=40)
     template_id: str = Field(default="", max_length=40)
