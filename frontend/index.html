@@ -8,13 +8,18 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="icon" type="image/svg+xml" href="/frontend/favicon.svg">
-  <link rel="stylesheet" href="/frontend/styles.css">
+  <link rel="stylesheet" href="/frontend/styles.css?v=20261120-logo-static">
 </head>
 <body>
   <div class="page">
     <header class="topbar">
       <a class="brand" href="/" aria-label="Email Automation home">
-        <span class="brand-mark">EA</span>
+        <span class="brand-mark">
+          <svg class="brand-logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="2.75" y="4.75" width="18.5" height="14.5" rx="2.5" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M3.75 6.5 12 12.6l8.25-6.1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
         <span class="brand-text">
           <strong>Email Automation</strong>
           <small>Outreach control room</small>
@@ -92,7 +97,13 @@
         <!-- PITCH EMAIL -->
         <div id="pitch-section" class="tab-panel">
           <form id="pitch-form" class="form">
-            <section class="form-section">
+            <nav class="section-bar" role="tablist" aria-label="Pitch details">
+              <button type="button" id="pitch-tab-recipient" class="tab active" data-pitch-section="recipient" role="tab" aria-selected="true" aria-controls="pitch-panel-recipient">Recipient &amp; offer</button>
+              <button type="button" id="pitch-tab-sending" class="tab" data-pitch-section="sending" role="tab" aria-selected="false" aria-controls="pitch-panel-sending">Sending account</button>
+              <button type="button" id="pitch-tab-documents" class="tab" data-pitch-section="documents" role="tab" aria-selected="false" aria-controls="pitch-panel-documents">Reference documents</button>
+            </nav>
+
+            <section id="pitch-panel-recipient" class="form-section pitch-panel" role="tabpanel" aria-labelledby="pitch-tab-recipient">
               <div class="section-title">
                 <h3>Recipient &amp; offer</h3>
                 <p>Fields marked <span class="req">*</span> are required.</p>
@@ -129,72 +140,72 @@
               <label>Personalization notes
                 <textarea id="pitch-details" rows="3" maxlength="1000" placeholder="Pain points, recent news, or anything the email should reference…"></textarea>
               </label>
+            </section>
 
-              <div class="form-section">
-                <div class="section-title">
-                  <h3>Sending account</h3>
-                  <p>Choose which mailbox to send from (overrides .env for this send).</p>
+            <section id="pitch-panel-sending" class="form-section pitch-panel hidden" role="tabpanel" aria-labelledby="pitch-tab-sending">
+              <div class="section-title">
+                <h3>Sending account</h3>
+                <p>Choose which mailbox to send from (overrides .env for this send).</p>
+              </div>
+              <div class="grid grid-2">
+                <label>SMTP provider
+                  <select id="pitch-smtp-provider">
+                    <option value="">Use default (.env)</option>
+                    <option value="zoho">Zoho</option>
+                    <option value="gmail">Gmail</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </label>
+                <label>Sender email / SMTP user
+                  <input id="pitch-smtp-user" placeholder="sales@getabdion.com" maxlength="320">
+                </label>
+                <label>App password / SMTP password
+                  <input id="pitch-smtp-password" type="password" placeholder="Leave empty to use default" maxlength="200">
+                </label>
+                <label>From name
+                  <input id="pitch-sender-name" placeholder="Leave empty to use company/default" maxlength="100">
+                </label>
+              </div>
+              <div class="smtp-health">
+                <p class="muted small">Defaults come from your .env. Use app passwords if 2FA is enabled.</p>
+                <button type="button" id="check-deliverability-btn" class="btn btn-ghost btn-sm">Check DNS authentication</button>
+              </div>
+            </section>
+
+            <section id="pitch-panel-documents" class="form-section pitch-panel hidden" role="tabpanel" aria-labelledby="pitch-tab-documents">
+              <div class="section-title">
+                <h3>Reference documents</h3>
+                <p>Upload a CV, bio, or company brief. The AI reads the text and grounds the pitch in it.</p>
+              </div>
+              <div class="docs-grid">
+                <div class="doc-group">
+                  <div class="doc-group-head">
+                    <span>Contact documents</span>
+                    <label class="btn btn-ghost btn-sm file-btn" id="contact-doc-label">
+                      <span>Upload</span>
+                      <input id="contact-doc-input" type="file" multiple accept=".pdf,.docx,.txt,.md">
+                    </label>
+                  </div>
+                  <div id="contact-doc-list" class="doc-list">
+                    <p class="doc-empty">No contact documents yet.</p>
+                  </div>
+                  <p class="doc-hint muted small" id="contact-doc-hint">Save the contact first, then you can attach files.</p>
                 </div>
-                <div class="grid grid-2">
-                  <label>SMTP provider
-                    <select id="pitch-smtp-provider">
-                      <option value="">Use default (.env)</option>
-                      <option value="zoho">Zoho</option>
-                      <option value="gmail">Gmail</option>
-                      <option value="custom">Custom</option>
-                    </select>
-                  </label>
-                  <label>Sender email / SMTP user
-                    <input id="pitch-smtp-user" placeholder="sales@getabdion.com" maxlength="320">
-                  </label>
-                  <label>App password / SMTP password
-                    <input id="pitch-smtp-password" type="password" placeholder="Leave empty to use default" maxlength="200">
-                  </label>
-                  <label>From name
-                    <input id="pitch-sender-name" placeholder="Leave empty to use company/default" maxlength="100">
-                  </label>
-                </div>
-                <div class="smtp-health">
-                  <p class="muted small">Defaults come from your .env. Use app passwords if 2FA is enabled.</p>
-                  <button type="button" id="check-deliverability-btn" class="btn btn-ghost btn-sm">Check DNS authentication</button>
+                <div class="doc-group">
+                  <div class="doc-group-head">
+                    <span>Company documents</span>
+                    <label class="btn btn-ghost btn-sm file-btn">
+                      <span>Upload</span>
+                      <input id="company-doc-input" type="file" multiple accept=".pdf,.docx,.txt,.md">
+                    </label>
+                  </div>
+                  <div id="company-doc-list" class="doc-list">
+                    <p class="doc-empty">No company documents yet.</p>
+                  </div>
+                  <p class="doc-hint muted small">Brochures, case studies, or service sheets.</p>
                 </div>
               </div>
-
-              <div class="docs-block">
-                <div class="section-title">
-                  <h3>Reference documents</h3>
-                  <p>Upload a CV, bio, or company brief. The AI reads the text and grounds the pitch in it.</p>
-                </div>
-                <div class="docs-grid">
-                  <div class="doc-group">
-                    <div class="doc-group-head">
-                      <span>Contact documents</span>
-                      <label class="btn btn-ghost btn-sm file-btn" id="contact-doc-label">
-                        <span>Upload</span>
-                        <input id="contact-doc-input" type="file" multiple accept=".pdf,.docx,.txt,.md">
-                      </label>
-                    </div>
-                    <div id="contact-doc-list" class="doc-list">
-                      <p class="doc-empty">No contact documents yet.</p>
-                    </div>
-                    <p class="doc-hint muted small" id="contact-doc-hint">Save the contact first, then you can attach files.</p>
-                  </div>
-                  <div class="doc-group">
-                    <div class="doc-group-head">
-                      <span>Company documents</span>
-                      <label class="btn btn-ghost btn-sm file-btn">
-                        <span>Upload</span>
-                        <input id="company-doc-input" type="file" multiple accept=".pdf,.docx,.txt,.md">
-                      </label>
-                    </div>
-                    <div id="company-doc-list" class="doc-list">
-                      <p class="doc-empty">No company documents yet.</p>
-                    </div>
-                    <p class="doc-hint muted small">Brochures, case studies, or service sheets.</p>
-                  </div>
-                </div>
-                <p class="muted small">PDF, DOCX, TXT, or MD · max 5 MB each · up to 10 per profile. Scanned images are not supported.</p>
-              </div>
+              <p class="muted small">PDF, DOCX, TXT, or MD · max 5 MB each · up to 10 per profile. Scanned images are not supported.</p>
             </section>
 
             <div class="form-footer">
@@ -380,6 +391,6 @@
   </div>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
-  <script src="/frontend/app.js"></script>
+  <script src="/frontend/app.js?v=20261120-sections"></script>
 </body>
 </html>

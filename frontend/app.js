@@ -879,6 +879,17 @@ function showTab(tab) {
   $("tab-pill").textContent = isPitch ? "B2B pitch" : "Quick email";
 }
 
+function showPitchSection(name) {
+  ["recipient", "sending", "documents"].forEach((section) => {
+    $("pitch-panel-" + section).classList.toggle("hidden", section !== name);
+  });
+  document.querySelectorAll("[data-pitch-section]").forEach((button) => {
+    const active = button.dataset.pitchSection === name;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /* Previews & sending                                                  */
 /* ------------------------------------------------------------------ */
@@ -1125,6 +1136,21 @@ async function sendQuickEmail() {
 function bindEvents() {
   $("tab-pitch-btn").addEventListener("click", () => showTab("pitch"));
   $("tab-standard-btn").addEventListener("click", () => showTab("standard"));
+  document.querySelectorAll("[data-pitch-section]").forEach((button) => {
+    button.addEventListener("click", () => showPitchSection(button.dataset.pitchSection));
+  });
+  // Reveal the panel that owns the first invalid field, so native validation
+  // can focus it instead of failing on a hidden required input.
+  $("pitch-form").addEventListener(
+    "invalid",
+    (event) => {
+      const panel = event.target.closest(".pitch-panel");
+      if (panel && panel.classList.contains("hidden")) {
+        showPitchSection(panel.id.replace("pitch-panel-", ""));
+      }
+    },
+    true
+  );
 
   $("smtp-toggle-button").addEventListener("click", () => {
     const next = nextSmtpProvider();

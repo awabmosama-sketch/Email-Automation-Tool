@@ -50,7 +50,46 @@ body::before {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
-.req { color: var(--coral); font-weight: 600; }
+.req {
+  position: relative;
+  display: inline-block;
+  color: var(--coral);
+  font-weight: 600;
+  cursor: help;
+}
+.req::before,
+.req::after {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+  z-index: 30;
+}
+.req::after {
+  content: "Required field";
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: var(--ink);
+  color: #fff;
+  font: 500 10px var(--mono);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.req::before {
+  content: "";
+  bottom: calc(100% + 2px);
+  border: 4px solid transparent;
+  border-top-color: var(--ink);
+}
+.req:hover::before,
+.req:hover::after {
+  opacity: 1;
+  visibility: visible;
+}
 
 .page {
   position: relative;
@@ -87,6 +126,7 @@ body::before {
   font: 500 12px var(--mono);
   letter-spacing: 0.04em;
 }
+.brand-logo { display: block; width: 20px; height: 20px; }
 .brand-text { display: grid; line-height: 1.15; }
 .brand-text strong { font-size: 15px; letter-spacing: -0.02em; }
 .brand-text small { color: var(--muted); font: 10px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
@@ -233,6 +273,16 @@ h1 { margin: 0; font-size: clamp(38px, 5vw, 58px); line-height: 0.98; letter-spa
 }
 .tab:hover { color: var(--ink); }
 .tab.active { background: #fff; color: var(--green); box-shadow: 0 1px 3px rgba(24, 33, 31, 0.1); }
+.section-bar {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  overflow-x: auto;
+}
+.section-bar .tab { flex: 1 1 auto; white-space: nowrap; }
 .pill {
   padding: 6px 10px;
   border-radius: 999px;

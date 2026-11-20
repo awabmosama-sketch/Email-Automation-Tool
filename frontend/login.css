@@ -60,6 +60,8 @@ body::before {
   letter-spacing: 0.04em;
 }
 
+.brand-logo { display: block; width: 20px; height: 20px; }
+
 .brand strong { display: block; font-size: 15px; letter-spacing: -0.02em; }
 .brand small { display: block; color: var(--muted); font: 10px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 
@@ -179,5 +181,5 @@ input:focus { border-color: var(--green); background: #fff; box-shadow: 0 0 0 3p
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: 0.01ms !important; }
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }

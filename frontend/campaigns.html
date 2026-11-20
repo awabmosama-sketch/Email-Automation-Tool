@@ -8,14 +8,19 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="icon" type="image/svg+xml" href="/frontend/favicon.svg">
-  <link rel="stylesheet" href="/frontend/styles.css">
-  <link rel="stylesheet" href="/frontend/campaigns.css">
+  <link rel="stylesheet" href="/frontend/styles.css?v=20261120-logo-static">
+  <link rel="stylesheet" href="/frontend/campaigns.css?v=20261120-logo-static">
 </head>
 <body>
   <div class="page console-page">
     <header class="topbar">
       <a class="brand" href="/" aria-label="Email Automation home">
-        <span class="brand-mark">EA</span>
+        <span class="brand-mark">
+          <svg class="brand-logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="2.75" y="4.75" width="18.5" height="14.5" rx="2.5" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M3.75 6.5 12 12.6l8.25-6.1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
         <span class="brand-text">
           <strong>Email Automation</strong>
           <small>Campaign console</small>
@@ -118,7 +123,7 @@
           <div class="empty">Loading campaigns…</div>
         </div>
 
-        <div class="console-toolbar" style="margin-top:24px">
+        <div class="console-toolbar brands-toolbar">
           <div>
             <h2>Brands</h2>
             <p class="muted small">Reuse one signature and domain across multiple campaigns.</p>
@@ -160,7 +165,7 @@
             <p class="muted small">Global defaults and session status. Read-only.</p>
           </div>
         </div>
-        <div class="card" style="padding:16px">
+        <div class="card settings-summary">
           <div id="settings-status" class="entity-meta">
             <span>SMTP provider: <b id="settings-smtp">—</b></span>
             <span>Worker: <b id="settings-worker">—</b></span>
@@ -276,7 +281,7 @@
 
             <div class="wizard-step hidden" data-step="4">
               <h4>Step 4 — Review</h4>
-              <div id="campaign-review" class="entity-meta" style="flex-direction:column;gap:6px"></div>
+              <div id="campaign-review" class="entity-meta campaign-review"></div>
             </div>
           </div>
 
@@ -418,7 +423,7 @@
                   <input id="sender-dkim" maxlength="100" placeholder="e.g. zoho">
                 </label>
                 <label>SPF include <span class="optional">(per sending domain)</span>
-                  <input id="sender-spf" maxlength="255" list="spf-include-list" pattern="(include:[A-Za-z0-9.-]+)?" title="A single include:provider.tld value, e.g. include:zoho.com" placeholder="include:zoho.com">
+                  <input id="sender-spf" maxlength="255" list="spf-include-list" pattern="(include:[A-Za-z0-9.\-]+)?" title="A single include:provider.tld value, e.g. include:zoho.com" placeholder="include:zoho.com">
                 </label>
                 <label>DMARC policy <span class="optional">(strict alignment)</span>
                   <select id="sender-dmarc">

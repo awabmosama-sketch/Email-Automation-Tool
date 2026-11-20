@@ -389,6 +389,10 @@ label > textarea { width: 100%; }
 .dns-tips { margin: 4px 0 0; padding-left: 18px; font-size: 11.5px; color: var(--muted); }
 .dns-tips li { margin-bottom: 3px; }
 
+.brands-toolbar { margin-top: 24px; }
+.settings-summary { padding: 16px; }
+.campaign-review { flex-direction: column; gap: 6px; }
+
 @media (max-width: 1080px) {
   .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .count-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
