@@ -222,6 +222,11 @@ function renderOverview(data) {
   $("stat-spam").textContent = Number(totals.spam_alert || 0).toLocaleString();
   $("stat-spam-rate").textContent = `${Number(totals.spam_rate || 0)}% spam rate`;
 
+  const settingsWorker = $("settings-worker");
+  if (settingsWorker) settingsWorker.textContent = data.queue_worker ? "active" : "cron mode";
+  const settingsSmtp = $("settings-smtp");
+  if (settingsSmtp) settingsSmtp.textContent = "default (.env)";
+
   const worker = $("worker-dot");
   const workerText = $("worker-text");
   if (data.queue_worker) {
@@ -238,12 +243,9 @@ function renderOverview(data) {
 /* ------------------------------------------------------------------ */
 
 function renderCampaigns() {
-  const list = $("campaign-list");
-  if (!state.campaigns.length) {
-    list.innerHTML = `<div class="empty">No campaigns yet. Create one, paste a Google Sheet URL, then sync and start.</div>`;
-    return;
-  }
-  list.innerHTML = state.campaigns
+  const html = !state.campaigns.length
+    ? `<div class="empty">No campaigns yet. Create one, paste a Google Sheet URL, then sync and start.</div>`
+    : state.campaigns
     .map((campaign) => {
       const stats = campaign.stats || {};
       const toggle =
@@ -292,6 +294,10 @@ function renderCampaigns() {
         </article>`;
     })
     .join("");
+  ["campaign-list", "campaign-list-page"].forEach((id) => {
+    const el = $(id);
+    if (el) el.innerHTML = html;
+  });
 }
 
 async function startCampaign(campaign) {
@@ -345,7 +351,9 @@ async function deleteCampaign(campaign) {
   await refreshAll();
 }
 
-$("campaign-list").addEventListener("click", async (event) => {
+async function handleCampaignListClick(event) {
+  const __list = event.currentTarget;
+  if (!__list) return;
   const button = event.target.closest("button[data-act]");
   if (!button) return;
   const campaign = state.campaigns.find((item) => item.id === button.dataset.id);
@@ -372,6 +380,11 @@ $("campaign-list").addEventListener("click", async (event) => {
       await refreshAll();
     });
   }
+}
+
+["campaign-list", "campaign-list-page"].forEach((id) => {
+  const el = $(id);
+  if (el) el.addEventListener("click", handleCampaignListClick);
 });
 
 /* ------------------------------------------------------------------ */
@@ -426,7 +439,8 @@ function openCampaignModal(campaign = null) {
   $("campaign-name").value = campaign?.name || "";
   $("campaign-sheet-url").value = campaign?.sheet_url || "";
   $("campaign-sheet-tab").value = campaign?.sheet_tab || "";
-  $("campaign-sheet-gid").value = campaign?.sheet_gid || "0";
+  // Blank means "take the gid from the sheet URL"; never prefill a fake gid.
+  $("campaign-sheet-gid").value = campaign?.sheet_gid ?? "";
   $("campaign-timezone").value =
     campaign?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   $("campaign-hourly").value = campaign?.hourly_limit ?? "";
@@ -462,39 +476,152 @@ function openCampaignModal(campaign = null) {
   $("sheet-preview").innerHTML = "";
   $("campaign-form-error").classList.add("hidden");
   renderMapping();
+  updateGidHint();
   openModal("campaign-modal");
 }
+
+const GID_IN_URL = /[?&#]gid=(\d+)/;
+
+function updateGidHint() {
+  const hint = $("campaign-gid-hint");
+  if (!hint) return;
+  const url = $("campaign-sheet-url").value.trim();
+  const typed = $("campaign-sheet-gid").value.trim();
+  const urlGid = (url.match(GID_IN_URL) || [])[1] || "";
+  const warning = $("campaign-gid-warning");
+  if (warning) {
+    if (typed && urlGid && typed !== urlGid) {
+      warning.textContent = `URL gid ${urlGid} differs from stored ${typed} — which tab should this campaign use?`;
+      warning.classList.remove("hidden");
+    } else {
+      warning.textContent = "";
+      warning.classList.add("hidden");
+    }
+  }
+  if (typed) {
+    hint.textContent = `Using gid ${typed} from the gid field.`;
+  } else if (urlGid) {
+    hint.textContent = `Using gid ${urlGid} from the sheet URL.`;
+  } else if (url) {
+    hint.textContent =
+      "No gid in URL — will use the first tab. Open the desired tab and copy the address-bar URL to target it.";
+  } else {
+    hint.textContent = "The gid is the number after #gid= in the sheet URL.";
+  }
+}
+
+$("campaign-sheet-url").addEventListener("input", updateGidHint);
+$("campaign-sheet-gid").addEventListener("input", updateGidHint);
 
 $("campaign-use-ai").addEventListener("change", () => {
   $("campaign-ai-wrap").classList.toggle("hidden", !$("campaign-use-ai").checked);
 });
 
 function renderSheetPreview(result) {
+  const headers = result.headers || [];
   const sample = result.sample || [];
-  const columns = ["first_name", "position", "company_name", "business_email"];
-  const warnings = (result.warnings || []).map((warning) => `<li>${esc(warning)}</li>`).join("");
-  const rows = sample
-    .map(
-      (lead) =>
-        `<tr>${columns
-          .map((column) => `<td>${esc(lead[column] || "")}</td>`)
-          .join("")}</tr>`
+  const fieldMap = result.field_map || {};
+  const missingFields = (result.missing_fields || []).map((m) => m.label).filter(Boolean);
+  const warnings = (result.warnings || [])
+    .concat(
+      missingFields.length
+        ? [`Sheet is missing column(s): ${missingFields.join(", ")}. Placeholders for those fields will render empty.`]
+        : []
     )
+    .map((warning) => `<li>${esc(warning)}</li>`)
     .join("");
+
+  // Show the first three raw data rows (not the lead sample), so the operator
+  // can see the actual columns the sheet returned. Phone-like columns are greyed
+  // out and marked excluded.
+  const firstRows = result.sample.length
+    ? sample.slice(0, 3)
+    : [];
+  const phoneCols = headers
+    .map((h, i) => ({ header: h, index: i }))
+    .filter(({ header }) => /phone|mobile|tel|telephone|whatsapp|cell/i.test(header))
+    .map(({ index }) => index);
+
+  const dataRowHtml = firstRows.length
+    ? firstRows
+        .map(
+          (row) =>
+            `<tr>${headers
+              .map(
+                (header, index) =>
+                  `<td class="${phoneCols.includes(index) ? "phone" : ""}">${esc(row[index] ?? "")}</td>`
+              )
+              .join("")}
+            </tr>`
+        )
+        .join("")
+    : `<tr><td colspan="${Math.max(headers.length, 1)}" class="muted">No data rows found.</td></tr>`;
+
+  // Per-field mapping indicator: green dot = column found, grey dot = missing.
+  const indicatorHtml = MAPPING_FIELDS.map(([field, label]) => {
+    const info = fieldMap[field] || {};
+    const cls = info.found ? "found" : "missing";
+    const labelClass = info.found ? "" : "excluded";
+    return `<span class="field-indicator ${labelClass}">
+      <span class="dot ${cls}"></span>
+      ${esc(label)}
+    </span>`;
+  }).join("");
+
+  // Resolve the sheet identity the preview actually used.
+  const spreadsheetId = result.spreadsheet_id || "";
+  const gid = (result.gid || "").trim();
+  const usedTab = result.used_tab || "first sheet";
+  const requestUrl = result.request_url || "";
+  const resolvedGid = gid || "first sheet";
+  const dataRowCount = Number.isFinite(result.total_rows) ? result.total_rows : Math.max(headers.length - 1, 0);
+
   $("sheet-preview").innerHTML = `
-    <h4>${Number(result.usable_leads || 0).toLocaleString()} usable rows of ${Number(
-      result.total_rows || 0
-    ).toLocaleString()} · ${esc(result.source || "sheet")}</h4>
-    ${warnings ? `<ul class="preview-warnings">${warnings}</ul>` : ""}
+    <div class="preview-meta">
+      <span class="meta-row">
+        <span class="meta-label">Sheet</span>
+        <span class="meta-value">${esc(spreadsheetId || "—")}</span>
+      </span>
+      <span class="meta-row">
+        <span class="meta-label">GID</span>
+        <span class="meta-value ${resolvedGid === "first sheet" ? "muted" : ""}">${esc(resolvedGid)}</span>
+      </span>
+      <span class="meta-row">
+        <span class="meta-label">Tab</span>
+        <span class="meta-value">${esc(String(usedTab))}</span>
+      </span>
+      <span class="meta-row">
+        <span class="meta-label">Rows</span>
+        <span class="meta-value">${esc(String(headers.length))} columns · ${esc(String(dataRowCount))} data rows</span>
+      </span>
+      ${requestUrl ? `<span class="meta-row">
+        <span class="meta-label">Request URL</span>
+        <span class="meta-value muted">${esc(requestUrl)}</span>
+      </span>` : ""}
+    </div>
+    <div class="preview-meta" style="justify-content:space-between; align-items:center;">
+      <span class="meta-row">
+        <span class="meta-label">Field mapping</span>
+      </span>
+      <span class="field-indicator" style="gap:10px;">${indicatorHtml}</span>
+    </div>
+    <div class="preview-meta" style="justify-content:space-between;">
+      <span class="meta-row">
+        <span class="meta-label">Header row</span>
+        <span class="meta-value">${esc(headers.join(", ") || "—")}</span>
+      </span>
+    </div>
+    ${warnings ? `<ul class="preview-missing-fields">${warnings}</ul>` : ""}
     <div class="preview-scroll">
       <table>
-        <thead><tr>${columns
-          .map((column) => `<th>${esc(column.replace(/_/g, " "))}</th>`)
-          .join("")}</tr></thead>
-        <tbody>${rows || `<tr><td colspan="4" class="muted">No usable rows found.</td></tr>`}</tbody>
+        <thead><tr>${headers
+          .map((header) => `<th>${esc(header)}</th>`)
+          .join("")}
+        </tr></thead>
+        <tbody>${dataRowHtml}</tbody>
       </table>
     </div>
-    <p class="muted small">Sample of the first ${sample.length} usable rows. Phone columns are ignored.</p>`;
+    <p class="muted small">Showing the first ${Math.min(firstRows.length, 3)} data rows. Phone columns are greyed out and excluded from the campaign.</p>`;
   $("sheet-preview").classList.remove("hidden");
 }
 
@@ -551,7 +678,7 @@ $("campaign-form").addEventListener("submit", async (event) => {
   const payload = {
     name: $("campaign-name").value.trim(),
     sheet_url: $("campaign-sheet-url").value.trim(),
-    sheet_gid: $("campaign-sheet-gid").value.trim() || "0",
+    sheet_gid: $("campaign-sheet-gid").value.trim(),
     sheet_tab: $("campaign-sheet-tab").value.trim(),
     sender_id: $("campaign-sender").value,
     template_id: $("campaign-template").value,
@@ -1298,19 +1425,6 @@ $("confirm-modal").addEventListener("click", (event) => {
 /* Tabs, modals, shell                                                 */
 /* ------------------------------------------------------------------ */
 
-document.querySelectorAll(".console-tabs .tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    state.tab = tab.dataset.tab;
-    document.querySelectorAll(".console-tabs .tab").forEach((item) => {
-      const active = item === tab;
-      item.classList.toggle("active", active);
-      item.setAttribute("aria-selected", String(active));
-    });
-    document.querySelectorAll(".tab-panel").forEach((panel) => {
-      panel.classList.toggle("hidden", panel.id !== `panel-${state.tab}`);
-    });
-  });
-});
 
 document.querySelectorAll("[data-close]").forEach((button) => {
   button.addEventListener("click", () => closeModal(button.dataset.close));
@@ -1376,3 +1490,164 @@ async function initAuth() {
 fillHourSelects();
 renderMapping();
 initAuth().finally(refreshAll);
+
+/* ------------------------------------------------------------------ */
+/* Page swap (5 top-level pages)                                      */
+/* ------------------------------------------------------------------ */
+
+document.querySelectorAll("[data-page]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const page = button.dataset.page;
+    document.querySelectorAll(".tab-panel").forEach((panel) => {
+      panel.classList.toggle("hidden", panel.id !== `page-${page}`);
+    });
+    document.querySelectorAll("[data-page]").forEach((item) => {
+      const active = item === button;
+      item.classList.toggle("active", active);
+      item.setAttribute("aria-selected", String(active));
+    });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Campaign wizard                                                    */
+/* ------------------------------------------------------------------ */
+
+let campaignWizardStep = 1;
+function showCampaignWizardStep(step) {
+  campaignWizardStep = step;
+  document.querySelectorAll('[data-wizard="campaign"] .wizard-step').forEach((el) => {
+    el.classList.toggle("hidden", Number(el.dataset.step) !== step);
+  });
+  const back = $("campaign-wizard-back");
+  const next = $("campaign-wizard-next");
+  const create = $("save-campaign-button");
+  if (back) back.classList.toggle("hidden", step === 1);
+  if (next) next.classList.toggle("hidden", step === 4);
+  if (create) create.classList.toggle("hidden", step !== 4);
+  if (step === 4) {
+    const review = $("campaign-review");
+    if (review) {
+      review.innerHTML = `
+        <span>Name: <b>${esc($("campaign-name").value.trim() || "—")}</b></span>
+        <span>Sheet: <b>${esc($("campaign-sheet-url").value.trim() || "—")}</b></span>
+        <span>Sender: <b>${esc($("campaign-sender").selectedOptions[0]?.textContent || "—")}</b></span>
+        <span>Template: <b>${esc($("campaign-template").selectedOptions[0]?.textContent || "—")}</b></span>
+        <span>Brand: <b>${esc($("campaign-brand").selectedOptions[0]?.textContent || "—")}</b></span>
+        <span>Caps: <b>${esc($("campaign-hourly").value || "default")}/hr · ${esc($("campaign-daily").value || "default")}/day</b></span>
+      `;
+    }
+  }
+}
+
+const cwNext = $("campaign-wizard-next");
+if (cwNext) {
+  cwNext.addEventListener("click", () => {
+    if (campaignWizardStep === 1) {
+      if (!$("campaign-name").value.trim()) {
+        notify("Campaign name is required.", "error");
+        return;
+      }
+      if (!$("campaign-sheet-url").value.trim()) {
+        notify("Google Sheet URL is required.", "error");
+        return;
+      }
+    }
+    if (campaignWizardStep < 4) showCampaignWizardStep(campaignWizardStep + 1);
+  });
+}
+const cwBack = $("campaign-wizard-back");
+if (cwBack) {
+  cwBack.addEventListener("click", () => {
+    if (campaignWizardStep > 1) showCampaignWizardStep(campaignWizardStep - 1);
+  });
+}
+
+// Reset wizard step when modal opens
+const origOpenCampaignModal = openCampaignModal;
+openCampaignModal = function (campaign = null) {
+  origOpenCampaignModal(campaign);
+  showCampaignWizardStep(1);
+};
+
+/* ------------------------------------------------------------------ */
+/* Sender wizard                                                      */
+/* ------------------------------------------------------------------ */
+
+let senderWizardStep = 1;
+function showSenderWizardStep(step) {
+  senderWizardStep = step;
+  document.querySelectorAll('[data-wizard="sender"] .wizard-step').forEach((el) => {
+    el.classList.toggle("hidden", Number(el.dataset.step) !== step);
+  });
+  const back = $("sender-wizard-back");
+  const next = $("sender-wizard-next");
+  const save = $("save-sender-button");
+  if (back) back.classList.toggle("hidden", step === 1);
+  if (next) next.classList.toggle("hidden", step === 3);
+  if (save) save.classList.toggle("hidden", step !== 3);
+}
+
+const swNext = $("sender-wizard-next");
+if (swNext) {
+  swNext.addEventListener("click", () => {
+    if (senderWizardStep === 1) {
+      if (!$("sender-email").value.trim()) {
+        notify("From email is required.", "error");
+        return;
+      }
+    }
+    if (senderWizardStep < 3) showSenderWizardStep(senderWizardStep + 1);
+  });
+}
+const swBack = $("sender-wizard-back");
+if (swBack) {
+  swBack.addEventListener("click", () => {
+    if (senderWizardStep > 1) showSenderWizardStep(senderWizardStep - 1);
+  });
+}
+
+const origOpenSenderModal = openSenderModal;
+openSenderModal = function (sender = null) {
+  origOpenSenderModal(sender);
+  showSenderWizardStep(1);
+};
+
+// Inline Test DNS button in sender wizard
+const senderTestDnsBtn = $("sender-test-dns-button");
+if (senderTestDnsBtn) {
+  senderTestDnsBtn.addEventListener("click", async () => {
+    const sender = state.editing.sender;
+    const box = $("sender-dns-inline-result");
+    if (!sender) {
+      if (box) {
+        box.textContent = "Save the sender first, then test DNS.";
+        box.className = "notice error";
+        box.classList.remove("hidden");
+      }
+      return;
+    }
+    if (box) {
+      box.textContent = "Checking DNS…";
+      box.className = "notice info";
+      box.classList.remove("hidden");
+    }
+    try {
+      const data = await api(`/api/senders/${encodeURIComponent(sender.id)}/deliverability`);
+      const auth = data.authenticated ? "PASS" : "FAIL";
+      if (box) {
+        box.textContent = `DNS ${auth} — ${data.domain || ""}`;
+        box.className = `notice ${data.authenticated ? "info" : "error"}`;
+      }
+    } catch (error) {
+      if (box) {
+        box.textContent = error.message;
+        box.className = "notice error";
+      }
+    }
+  });
+}
+
+// Initialize wizard steps on load
+showCampaignWizardStep(1);
+showSenderWizardStep(1);

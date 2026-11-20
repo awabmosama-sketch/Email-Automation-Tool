@@ -613,6 +613,11 @@ def campaigns_page() -> FileResponse:
     return FileResponse(CAMPAIGNS_FILE)
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "favicon.svg", media_type="image/svg+xml")
+
+
 @app.get("/login", include_in_schema=False)
 @app.get("/login/", include_in_schema=False)
 def login_page(request: Request):
