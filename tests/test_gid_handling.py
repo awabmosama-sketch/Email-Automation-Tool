@@ -6,6 +6,8 @@ string the URL's real gid was never read. ``0`` itself is a valid gid, so the
 fix is to stop inventing it -- not to treat it as invalid.
 """
 
+import json
+
 import pytest
 
 from backend import outreach, sheets
@@ -212,3 +214,36 @@ def test_legacy_zero_matching_a_url_gid_of_zero_is_kept(monkeypatch):
     monkeypatch.setattr(outreach, "load_state", lambda: outreach._normalise(state))
 
     assert outreach.get_campaign("cmp_legacy_zero")["sheet_gid"] == "0"
+
+
+@pytest.mark.unit
+def test_repair_writes_the_marker_to_disk(tmp_path, monkeypatch):
+    """The repair persists on the read that runs it, with no other write."""
+    state_path = tmp_path / "outreach.json"
+    state = _empty_state()
+    state["campaigns"].append(
+        {"id": "cmp_disk", "name": "Disk", "sheet_url": USER_URL, "sheet_gid": "0"}
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(outreach.config, "OUTREACH_FILE", state_path)
+    monkeypatch.setattr(outreach.database, "is_configured", lambda: False)
+
+    outreach.load_state()  # the read that performs the repair
+
+    on_disk = json.loads(state_path.read_text(encoding="utf-8"))
+    campaign = on_disk["campaigns"][0]
+    assert campaign["sheet_gid_repaired"] is True
+    assert campaign["sheet_gid"] == REAL_GID
+
+
+@pytest.mark.unit
+def test_edit_url_with_new_gid_and_stale_field_warns():
+    """A typed gid wins over a different gid in the URL, so campaigns.js warns.
+
+    The modal prefills the gid field from the campaign; pasting a URL with a
+    new gid leaves the stale value in force until the operator resolves it.
+    """
+    new_url = USER_URL.replace(REAL_GID, "222")
+
+    assert outreach._resolve_sheet_gid(REAL_GID, new_url) == REAL_GID
+    assert outreach._resolve_sheet_gid(None, new_url) == "222"

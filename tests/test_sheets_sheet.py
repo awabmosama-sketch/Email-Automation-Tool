@@ -182,3 +182,22 @@ def test_request_url_exposed_in_preview():
         "https://docs.google.com/spreadsheets/d/abc12345678901234567890"
         "/export?format=csv&gid=679250682"
     )
+
+
+@pytest.mark.unit
+def test_preview_warns_when_mapping_names_a_missing_column():
+    """A saved mapping for a column that no longer exists must warn, not raise."""
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(
+            sheets.httpx, "get",
+            _dispatch(
+                sheets_get={"sheets": [{"properties": {"title": "Leads"}}]},
+                csv_text="First Name,Business Email\r\nAda,ada@example.com\r\n",
+            ),
+        )
+        result = sheets.preview_sheet(
+            "https://docs.google.com/spreadsheets/d/abc12345678901234567890",
+            gid="", tab="Leads",
+            mapping={"company_name": "Website"},
+        )
+    assert any("Company Name will be blank" in warning for warning in result["warnings"])
